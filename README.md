@@ -33,15 +33,18 @@ dotnet publish .\src\FysZeRewardOverlay.csproj -c Release --no-self-contained -o
 | 拖动 / 锁定 | Ctrl + Shift + F9 |
 | 打开设置 | Ctrl + Shift + F10 |
 
-右键系统托盘图标也可打开设置、恢复位置、刷新奖励和退出。CS2 建议使用无边框窗口或普通窗口；独占全屏可能覆盖桌面悬浮窗。
+你可以通过任务栏找到该软件,右键进行设置。
+CS2 建议使用无边框窗口或普通窗口；独占全屏可能覆盖桌面悬浮窗。
 
 ## 数据来源
 
-- 实时输入：`%LOCALAPPDATA%\fys\fys.broadcast.assistant.txt`，只读。
+- 实时输入：`%LOCALAPPDATA%\fys\fys.broadcast.assistant.txt`，需要在 `FYS助手`的直播中心开启2个必选项:
+          直播助手-显示内容-`关卡`和`地图`。
 - 官方奖励：[fyscs/cs2 — 2001/sharp/configs/rewards](https://github.com/fyscs/cs2/tree/master/2001/sharp/configs/rewards)。
 - 本机设置和缓存：`%LOCALAPPDATA%\FysZeRewardOverlay`。
 
-这里只显示公开配置的基础奖励，服务器同步、个人加成和活动倍率可能影响实际结算。广播文件未提供有效关卡时不会猜测关卡，也不会默认沿用上一张地图的奖励。游戏内 ZE 实测尚待完成。
+这里只显示公开配置的基础奖励，服务器同步、个人加成和活动倍率可能影响实际结算。
+显示关卡奖励信息不会依据玩家的VIP加成倍率而更改,所以通关结算奖励以服务器获取为准。
 
 ## 项目内容
 
