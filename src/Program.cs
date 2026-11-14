@@ -22,10 +22,21 @@ internal static class Program
         var directory = Option("--data-dir") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FysZeRewardOverlay");
         Directory.CreateDirectory(directory);
         var settings = Settings.Load(directory);
-        if (Option("--source") is string source) settings.BroadcastPath = source;
+        if (Option("--source") is string source)
+        {
+            settings.MapSource = MapSource.Broadcast;
+            settings.BroadcastPath = source;
+        }
         if (args.Contains("--diagnose"))
         {
-            var broadcast = BroadcastReader.Read(settings.BroadcastPath);
+            Broadcast broadcast;
+            if (settings.MapSource == MapSource.Gsi)
+            {
+                using var gsi = GsiListener.Start(out var error);
+                gsi?.WaitForUpdate();
+                broadcast = gsi?.Read(settings.BroadcastPath) ?? BroadcastReader.Invalid(error);
+            }
+            else broadcast = BroadcastReader.Read(settings.BroadcastPath);
             using var rewards = new RewardRepository(Path.Combine(directory, "cache"));
             rewards.RefreshInterval = TimeSpan.FromMinutes(settings.RewardRefreshMinutes);
             var result = DisplayInfo.Resolve(broadcast, broadcast.IsZe && broadcast.Stage.HasValue ? rewards.GetAsync(broadcast.Map).GetAwaiter().GetResult() : null);

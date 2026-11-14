@@ -14,8 +14,24 @@ namespace FysZeRewardOverlay;
 
 public record Broadcast(string Map, string Title, int? Stage, string StageText, string Error, bool FileUnavailable = false)
 {
+    internal int? ServerNumber { get; init; }
+    public int? CtScore { get; init; }
+    public int? Kills { get; init; }
     public bool IsZe => Regex.IsMatch(Map, @"^ze_[a-z0-9_-]{1,120}$", RegexOptions.IgnoreCase);
-    public string Identity => Map + "|" + Title + "|" + Stage + "|" + StageText + "|" + Error + "|" + FileUnavailable;
+    public string Identity => Map + "|" + Title + "|" + Stage + "|" + StageText + "|" + Error + "|" + FileUnavailable + "|" + ServerNumber + "|" + CtScore;
+}
+
+internal static class FysServer
+{
+    private static readonly Regex ZeServer = new(@"僵[尸屍]逃[跑脫]\s*(?:([①-⑳])|([0-9]+)\s*[#服])", RegexOptions.CultureInvariant);
+
+    internal static int? ParseNumber(string name)
+    {
+        var match = ZeServer.Match(name);
+        if (match.Groups[1].Value is { Length: 1 } circled) return circled[0] - '①' + 1;
+        return int.TryParse(match.Groups[2].Value, NumberStyles.None, CultureInfo.InvariantCulture, out int number) && number > 0
+            ? number : null;
+    }
 }
 
 public static class BroadcastReader
@@ -25,28 +41,29 @@ public static class BroadcastReader
         try
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (stream.Length > 65536) return Invalid("实时文件内容过长", true);
+            if (stream.Length > 65536) return Invalid(BroadcastFiles.DisplayName + "内容过长", true);
             using var reader = new StreamReader(stream, new UTF8Encoding(false, true), true);
             return Parse(reader.ReadToEnd());
         }
-        catch (FileNotFoundException) { return Invalid("实时文件尚未生成", true); }
-        catch (DirectoryNotFoundException) { return Invalid("实时文件路径不存在", true); }
-        catch (IOException) { return Invalid("实时文件暂时无法读取", true); }
-        catch (UnauthorizedAccessException) { return Invalid("没有实时文件的读取权限", true); }
-        catch (DecoderFallbackException) { return Invalid("无法识别实时文件编码", true); }
-        catch (ArgumentException) { return Invalid("实时文件路径无效", true); }
+        catch (FileNotFoundException) { return Invalid(BroadcastFiles.DisplayName + "尚未生成", true); }
+        catch (DirectoryNotFoundException) { return Invalid(BroadcastFiles.DisplayName + "路径不存在", true); }
+        catch (IOException) { return Invalid(BroadcastFiles.DisplayName + "暂时无法读取", true); }
+        catch (UnauthorizedAccessException) { return Invalid("没有" + BroadcastFiles.DisplayName + "的读取权限", true); }
+        catch (DecoderFallbackException) { return Invalid("无法识别" + BroadcastFiles.DisplayName + "的编码", true); }
+        catch (ArgumentException) { return Invalid(BroadcastFiles.DisplayName + "路径无效", true); }
     }
 
     public static Broadcast Invalid(string reason, bool fileUnavailable = false) => new("", "", null, "", reason, fileUnavailable);
     public static Broadcast Parse(string raw)
     {
-        if (string.IsNullOrWhiteSpace(raw)) return Invalid("等待实时文件更新");
+        if (string.IsNullOrWhiteSpace(raw)) return Invalid("等待" + BroadcastFiles.DisplayName + "更新");
         string map = "", title = "", stageText = "";
         int? stage = null;
+        int? serverNumber = null;
         int mapLines = 0, stageLines = 0;
         foreach (var line in raw.TrimStart('\uFEFF').Replace("\r", "").Split('\n'))
         {
-            var match = Regex.Match(line, @"^\s*(?<key>地图(?:名称)?|Map|译名|当前关卡|关卡|当前阶段|Stage|Level)\s*[:：]\s*(?<value>.*?)\s*$", RegexOptions.IgnoreCase);
+            var match = Regex.Match(line, @"^\s*(?<key>区服|地图(?:名称)?|Map|译名|当前关卡|关卡|当前阶段|Stage|Level)\s*[:：]\s*(?<value>.*?)\s*$", RegexOptions.IgnoreCase);
             if (!match.Success) continue;
             var key = match.Groups["key"].Value;
             var value = match.Groups["value"].Value.Trim();
@@ -56,6 +73,7 @@ public static class BroadcastReader
                 map = value.ToLowerInvariant();
             }
             else if (key == "译名") title = value;
+            else if (key == "区服") serverNumber = FysServer.ParseNumber(value);
             else
             {
                 stageLines++;
@@ -67,13 +85,24 @@ public static class BroadcastReader
             }
         }
         if (mapLines == 0) return Invalid("当前未连接服务器或未提供地图信息");
-        if (mapLines != 1 || stageLines > 1) return Invalid("实时文件正在更新或字段重复");
+        if (mapLines != 1 || stageLines > 1) return Invalid(BroadcastFiles.DisplayName + "正在更新或字段重复");
         if (!Regex.IsMatch(map, @"^[a-z0-9_-]{1,124}$")) return Invalid("未读取到有效地图名称");
-        return new(map, title, stage, stageText, "");
+        return new(map, title, stage, stageText, "") { ServerNumber = serverNumber };
     }
 }
 
 public record Reward(int RankPasses, int RankDamage, int EconPasses, int EconDamage);
+
+public readonly record struct DamageProgress(long Bonus, decimal RemainingKills, double Fraction)
+{
+    public static DamageProgress? Calculate(int? kills, int damagePerReward)
+    {
+        if (kills is not int count || count < 0 || damagePerReward <= 0) return null;
+        long damage = count * 1000L;
+        long remainder = damage % damagePerReward;
+        return new DamageProgress(damage / damagePerReward, (damagePerReward - remainder) / 1000m, (double)remainder / damagePerReward);
+    }
+}
 public static class RewardParser
 {
     public static Dictionary<int, Reward> Parse(string text)
@@ -101,17 +130,24 @@ public record RewardData(Dictionary<int, Reward>? Rewards, DateTimeOffset? Fetch
 public record DisplayInfo(bool Available, string Map, string Title, int? Stage, Reward? Reward, string Source, string Detail)
 {
     public const string UnavailableText = "当前无法获取该地图信息";
+    public const string InferredStageUnavailableText = "当前关卡暂无地图奖励,或请手动核对关卡数据";
+    public bool StageInferred { get; init; }
+    public bool InferredStageMissingReward { get; init; }
+    public int? Kills { get; init; }
     public static DisplayInfo Resolve(Broadcast broadcast, RewardData? data)
     {
-        DisplayInfo Fail(string reason) => new(false, broadcast.Map, broadcast.Title, broadcast.Stage, null, "", reason);
+        DisplayInfo Fail(string reason) => new(false, broadcast.Map, broadcast.Title, broadcast.Stage, null, "", reason)
+            { StageInferred = broadcast.CtScore.HasValue };
         if (broadcast.Error.Length > 0) return Fail(broadcast.Error);
         if (!broadcast.IsZe) return Fail("当前不是 ZE 地图");
-        if (broadcast.Stage is null) return Fail(broadcast.StageText.Length == 0 ? "实时文件未提供当前关卡" : "无法识别关卡：" + broadcast.StageText);
+        if (broadcast.Stage is null) return Fail(broadcast.StageText.Length == 0 ? BroadcastFiles.DisplayName + "未提供当前关卡" : "无法识别关卡：" + broadcast.StageText);
         if (data is null) return Fail("正在获取该地图奖励…");
         if (data.Rewards is null) return Fail(data.Error);
-        if (!data.Rewards.TryGetValue(broadcast.Stage.Value, out var reward)) return Fail("未找到第 " + broadcast.Stage + " 关的奖励配置");
+        if (!data.Rewards.TryGetValue(broadcast.Stage.Value, out var reward))
+            return Fail("未找到第 " + broadcast.Stage + " 关的奖励配置") with { InferredStageMissingReward = broadcast.CtScore.HasValue };
         var source = data.Offline ? "离线缓存 · " + data.FetchedAt?.ToLocalTime().ToString("MM-dd HH:mm") : "官方配置 · 已同步";
-        return new(true, broadcast.Map, broadcast.Title, broadcast.Stage, reward, source, data.Offline ? "联网失败，使用上次成功获取的配置" : "伤害转化比 = 伤害 : 1 点货币");
+        return new(true, broadcast.Map, broadcast.Title, broadcast.Stage, reward, source, data.Offline ? "联网失败，使用上次成功获取的配置" : "伤害转化比 = 伤害 : 1 点货币")
+            { StageInferred = broadcast.CtScore.HasValue, Kills = broadcast.Kills };
     }
     public static string Ratio(int number) => number == 0 ? "未启用" : number.ToString("N0", CultureInfo.InvariantCulture) + " : 1";
 }

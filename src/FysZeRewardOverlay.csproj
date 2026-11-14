@@ -8,6 +8,8 @@
     <Nullable>enable</Nullable>
     <AssemblyName>FysZeRewardOverlay</AssemblyName>
     <Version>1.1.0</Version>
+    <Authors>creeper_kk</Authors>
+    <RepositoryUrl>https://github.com/creeper-kk/fys-ze-reward-overlay</RepositoryUrl>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\App.ico</ApplicationIcon>
     <!-- WPF owns the windows; WinForms is used only for NotifyIcon. DPI is declared in the WPF manifest. -->
@@ -15,5 +17,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="$(ApplicationIcon)" />
+    <AssemblyMetadata Include="RepositoryUrl" Value="$(RepositoryUrl)" />
   </ItemGroup>
 </Project>

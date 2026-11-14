@@ -23,7 +23,11 @@ public enum OverlayField
     Source = 256,
     HotkeyHint = 512,
     ErrorDetail = 1024,
-    All = 2047
+    All = 2047,
+    Unavailable = 2048,
+    SettingsButton = 4096,
+    LockButton = 8192,
+    SelectFileButton = 16384
 }
 
 public static class OverlayOptions
@@ -34,7 +38,7 @@ public static class OverlayOptions
         (OverlayField.MapName, "地图英文名"), (OverlayField.Stage, "当前关卡"),
         (OverlayField.RankPasses, "通关云点"), (OverlayField.RankDamage, "云点伤害转化比"),
         (OverlayField.EconPasses, "通关龙晶"), (OverlayField.EconDamage, "龙晶伤害转化比"),
-        (OverlayField.Source, "奖励来源 / 缓存状态"), (OverlayField.HotkeyHint, "底部快捷键提示"),
+        (OverlayField.Source, "数据来源 / 缓存状态"), (OverlayField.HotkeyHint, "底部快捷键提示"),
         (OverlayField.ErrorDetail, "无法获取信息的详细原因")
     };
 
@@ -66,6 +70,9 @@ public static class FontCatalog
 
 public static class BroadcastFiles
 {
+    internal const string DisplayName = "直播助手叠层文本";
+    internal const string SelectLabel = "选择" + DisplayName + "…";
+
     public static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "fys", "fys.broadcast.assistant.txt");
     public static bool TryNormalize(string text, out string path)
     {
@@ -83,7 +90,7 @@ public static class BroadcastFiles
     {
         var dialog = new Microsoft.Win32.OpenFileDialog
         {
-            Title = "选择广播信息文件", Filter = "广播文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*",
+            Title = "选择" + DisplayName, Filter = DisplayName + " (*.txt)|*.txt|所有文件 (*.*)|*.*",
             CheckFileExists = true, Multiselect = false, FileName = "fys.broadcast.assistant.txt"
         };
         if (TryNormalize(currentPath, out var normalized))

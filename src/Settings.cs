@@ -10,19 +10,42 @@ using System.Windows.Interop;
 
 namespace FysZeRewardOverlay;
 
+public enum MapSource { Broadcast, Gsi }
+public enum RewardValueAlignment { Right, Left, Center }
+
 public sealed class Settings
 {
+    internal const double DefaultScale = 0.8;
+    internal const double DefaultBackgroundOpacity = 0.35;
+    internal const double DefaultLeft = 2204;
+    internal const double DefaultTop = 365;
+    internal const int MaxRowSpacing = 48;
+    internal const int MinColumnSpacing = -48;
+    internal const int MaxColumnSpacing = 128;
+    internal const OverlayField DefaultHiddenFields = OverlayField.Heading | OverlayField.MapTitle |
+        OverlayField.MapName | OverlayField.Stage | OverlayField.Source | OverlayField.HotkeyHint;
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public MapSource MapSource { get; set; }
     public string BroadcastPath { get; set; } = BroadcastFiles.DefaultPath;
     public string ToggleHotkey { get; set; } = "Ctrl+Shift+F8";
     public string MoveHotkey { get; set; } = "Ctrl+Shift+F9";
     public string SettingsHotkey { get; set; } = "Ctrl+Shift+F10";
-    public double BackgroundOpacity { get; set; } = 0.55;
-    public double Scale { get; set; } = 1;
+    public string StageUpHotkey { get; set; } = "Shift+=";
+    public string StageDownHotkey { get; set; } = "Shift+-";
+    public double BackgroundOpacity { get; set; } = DefaultBackgroundOpacity;
+    public double Scale { get; set; } = DefaultScale;
+    public int RowSpacing { get; set; }
+    public int ColumnSpacing { get; set; }
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public RewardValueAlignment ValueAlignment { get; set; }
     public int PollIntervalMilliseconds { get; set; } = 600;
     public int RewardRefreshMinutes { get; set; } = 10;
     public string OverlayFontFamily { get; set; } = FontCatalog.DefaultName;
+    public OverlayTextStyle GlobalTextStyle { get; set; } = new();
+    public Dictionary<OverlayField, OverlayTextStyle> FieldTextStyles { get; set; } = new();
     [JsonConverter(typeof(JsonStringEnumConverter))]
-    public OverlayField HiddenFields { get; set; } = OverlayField.None;
+    public OverlayField HiddenFields { get; set; } = DefaultHiddenFields;
     public double? Left { get; set; }
     public double? Top { get; set; }
     public bool Locked { get; set; } = true;
@@ -31,14 +54,22 @@ public sealed class Settings
         try
         {
             var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(Path.Combine(directory, "settings.json"))) ?? new();
-            s.BackgroundOpacity = double.IsFinite(s.BackgroundOpacity) ? Math.Clamp(s.BackgroundOpacity, 0, 0.95) : 0.55;
-            s.Scale = double.IsFinite(s.Scale) ? Math.Clamp(s.Scale, 0.7, 1.8) : 1;
+            s.BackgroundOpacity = double.IsFinite(s.BackgroundOpacity) ? Math.Clamp(s.BackgroundOpacity, 0, 0.95) : DefaultBackgroundOpacity;
+            s.Scale = double.IsFinite(s.Scale) ? Math.Clamp(s.Scale, 0.7, 1.8) : DefaultScale;
+            s.RowSpacing = Math.Clamp(s.RowSpacing, 0, MaxRowSpacing);
+            s.ColumnSpacing = Math.Clamp(s.ColumnSpacing, MinColumnSpacing, MaxColumnSpacing);
+            if (!Enum.IsDefined(s.ValueAlignment)) s.ValueAlignment = RewardValueAlignment.Right;
             if (s.Left.HasValue && !double.IsFinite(s.Left.Value)) s.Left = null;
             if (s.Top.HasValue && !double.IsFinite(s.Top.Value)) s.Top = null;
-            if (string.IsNullOrWhiteSpace(s.BroadcastPath)) s.BroadcastPath = new Settings().BroadcastPath;
+            if (!Enum.IsDefined(s.MapSource)) s.MapSource = MapSource.Broadcast;
+            if (string.IsNullOrWhiteSpace(s.BroadcastPath)) s.BroadcastPath = s.MapSource == MapSource.Gsi ? "" : BroadcastFiles.DefaultPath;
             s.PollIntervalMilliseconds = Math.Clamp(s.PollIntervalMilliseconds, 200, 60000);
             s.RewardRefreshMinutes = Math.Clamp(s.RewardRefreshMinutes, 1, 1440);
             if (string.IsNullOrWhiteSpace(s.OverlayFontFamily)) s.OverlayFontFamily = FontCatalog.DefaultName;
+            s.GlobalTextStyle = s.GlobalTextStyle?.Validated() ?? new();
+            s.FieldTextStyles = (s.FieldTextStyles ?? new())
+                .Where(entry => OverlayTypography.Labels.ContainsKey(entry.Key) && entry.Value is not null)
+                .ToDictionary(entry => entry.Key, entry => entry.Value.Validated());
             s.HiddenFields &= OverlayField.All;
             return s;
         }
@@ -49,10 +80,18 @@ public sealed class Settings
         Directory.CreateDirectory(directory);
         AtomicFile.Write(Path.Combine(directory, "settings.json"), JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
     }
-    public Settings Copy() => (Settings)MemberwiseClone();
+    public Settings Copy()
+    {
+        var copy = (Settings)MemberwiseClone();
+        copy.FieldTextStyles = new(FieldTextStyles);
+        return copy;
+    }
     [JsonIgnore]
-    public string[] Hotkeys => new[] { ToggleHotkey, MoveHotkey, SettingsHotkey };
+    public string[] Hotkeys => new[] { ToggleHotkey, MoveHotkey, SettingsHotkey, StageUpHotkey, StageDownHotkey };
+    internal int ActiveHotkeyCount => MapSource == MapSource.Gsi ? 5 : 3;
     public bool Hides(OverlayField field) => (HiddenFields & field) != 0;
+    public OverlayTextStyle TextStyleFor(OverlayField field) => FieldTextStyles.TryGetValue(field, out var style)
+        ? style.WithFallback(GlobalTextStyle) : GlobalTextStyle;
 }
 
 public readonly record struct Shortcut(uint Modifiers, uint VirtualKey)
@@ -71,12 +110,18 @@ public readonly record struct Shortcut(uint Modifiers, uint VirtualKey)
                 case "ALT": modifiers |= 1; break;
                 case "SHIFT": modifiers |= 4; break;
                 default:
-                    string name = word.Length == 1 && char.IsDigit(word[0]) ? "D" + word : word;
+                    string name = word switch
+                    {
+                        "=" => nameof(Key.OemPlus),
+                        "-" => nameof(Key.OemMinus),
+                        _ => word.Length == 1 && char.IsDigit(word[0]) ? "D" + word : word
+                    };
                     if (key != Key.None || !Enum.TryParse(name, true, out key)) return false;
                     break;
             }
         }
-        bool validKey = key >= Key.A && key <= Key.Z || key >= Key.D0 && key <= Key.D9 || key >= Key.F1 && key <= Key.F24;
+        bool validKey = key >= Key.A && key <= Key.Z || key >= Key.D0 && key <= Key.D9 ||
+            key >= Key.F1 && key <= Key.F24 || key is Key.OemPlus or Key.OemMinus;
         if (modifiers == 0 || !validKey || key == Key.F12) return false;
         result = new(modifiers, (uint)KeyInterop.VirtualKeyFromKey(key));
         return true;
@@ -85,7 +130,8 @@ public readonly record struct Shortcut(uint Modifiers, uint VirtualKey)
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         var mods = Keyboard.Modifiers;
-        string value = ((mods & ModifierKeys.Control) != 0 ? "Ctrl+" : "") + ((mods & ModifierKeys.Alt) != 0 ? "Alt+" : "") + ((mods & ModifierKeys.Shift) != 0 ? "Shift+" : "") + key.ToString();
+        string name = key switch { Key.OemPlus => "=", Key.OemMinus => "-", _ => key.ToString() };
+        string value = ((mods & ModifierKeys.Control) != 0 ? "Ctrl+" : "") + ((mods & ModifierKeys.Alt) != 0 ? "Alt+" : "") + ((mods & ModifierKeys.Shift) != 0 ? "Shift+" : "") + name;
         if ((mods & ModifierKeys.Windows) != 0) return null;
         return TryParse(value, out _) ? value : null;
     }
@@ -105,15 +151,18 @@ public sealed class HotkeyManager : IDisposable
         source = HwndSource.FromHwnd(handle);
         source.AddHook(Hook);
     }
-    public bool Apply(string[] values, out string error)
+    public bool Apply(string[] values, out string error) => Apply(values, values.Length, out error);
+
+    internal bool Apply(string[] values, int activeCount, out string error)
     {
         var next = new List<Shortcut>();
         foreach (var value in values)
         {
-            if (!Shortcut.TryParse(value, out var shortcut)) { error = "快捷键无效：" + value + "。请使用 Ctrl / Alt / Shift 加字母、数字或功能键（不含 F12）。"; return false; }
-            if (next.Contains(shortcut)) { error = "三个快捷键不能重复。"; return false; }
+            if (!Shortcut.TryParse(value, out var shortcut)) { error = "快捷键无效：" + value + "。请使用 Ctrl / Alt / Shift 加字母、数字、功能键（不含 F12）或 = / -。"; return false; }
+            if (next.Contains(shortcut)) { error = "快捷键不能重复。"; return false; }
             next.Add(shortcut);
         }
+        next.RemoveRange(activeCount, next.Count - activeCount);
         var previous = registered;
         Unregister();
         for (int i = 0; i < next.Count; i++)
@@ -149,6 +198,8 @@ internal static class Native
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] internal static extern int GetWindowLong(IntPtr window, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongW")] internal static extern int SetWindowLong(IntPtr window, int index, int value);
     [DllImport("user32.dll")] internal static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    internal static void MoveWindow(IntPtr window, int x, int y) =>
+        SetWindowPos(window, IntPtr.Zero, x, y, 0, 0, 0x1 | 0x4 | 0x10); // Keep size, z-order and activation.
     internal static void SetClickThrough(IntPtr window, bool enabled)
     {
         const int transparent = 0x20, noActivate = 0x08000000, toolWindow = 0x80;
