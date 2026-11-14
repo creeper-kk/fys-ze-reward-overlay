@@ -27,6 +27,7 @@ public sealed class Settings
 
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public MapSource MapSource { get; set; }
+    public bool IsSvip { get; set; }
     public string BroadcastPath { get; set; } = BroadcastFiles.DefaultPath;
     public string ToggleHotkey { get; set; } = "Ctrl+Shift+F8";
     public string MoveHotkey { get; set; } = "Ctrl+Shift+F9";

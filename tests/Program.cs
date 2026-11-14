@@ -23,6 +23,12 @@ Check(BroadcastReader.Parse("\uFEFF地图: ze_lego\n关卡: 单关").Stage == 1,
 var data = new RewardData(parsed, DateTimeOffset.UtcNow, false, "");
 var result = DisplayInfo.Resolve(broadcast, data);
 Check(result.Available && result.Reward!.RankPasses == 18 && result.Reward.RankDamage == 20000 && result.Reward.EconPasses == 12 && result.Reward.EconDamage == 24000, "exact stage and all four rewards");
+var svipReward = new Reward(5, 20000, 12, 24000);
+Check(svipReward.GetRankPasses(false) == 5 && svipReward.GetRankPasses(true) == 6 &&
+    (svipReward with { RankPasses = 2 }).GetRankPasses(true) == 2 &&
+    (svipReward with { RankPasses = 3 }).GetRankPasses(true) == 4 &&
+    (svipReward with { RankPasses = int.MaxValue }).GetRankPasses(true) == 2_576_980_376,
+    "SVIP rounds the base cloud points and supports the full reward range");
 Check(!DisplayInfo.Resolve(broadcast with { Stage = 3 }, data).Available, "missing stage never falls back to stage one");
 Check(!DisplayInfo.Resolve(broadcast with { Stage = null }, data).Available, "missing broadcast stage is unavailable");
 Check(!DisplayInfo.Resolve(BroadcastReader.Parse("地图: fys_lobby_liyue"), data).Available, "non-ZE unavailable");
@@ -55,6 +61,61 @@ var temporary = Path.Combine(Path.GetTempPath(), "FysOverlayTests-" + Guid.NewGu
 Directory.CreateDirectory(temporary);
 try
 {
+    var steam = Path.Combine(temporary, "Steam");
+    var steamApps = Directory.CreateDirectory(Path.Combine(steam, "steamapps")).FullName;
+    var library = Path.Combine(temporary, "Steam 库");
+    var libraryApps = Directory.CreateDirectory(Path.Combine(library, "steamapps")).FullName;
+    var escapedLibrary = library.Replace(@"\", @"\\");
+    var libraryList = Path.Combine(steamApps, "libraryfolders.vdf");
+    File.WriteAllText(libraryList, $$"""
+        "libraryfolders"
+        {
+            "1"
+            {
+                "path" "{{escapedLibrary}}"
+                "apps"
+                {
+                    "730" "100"
+                }
+            }
+        }
+        """);
+    File.WriteAllText(Path.Combine(libraryApps, "appmanifest_730.acf"), """
+        "AppState"
+        {
+            "appid" "730"
+            "installdir" "Custom CS2 directory"
+        }
+        """);
+    var game = Path.Combine(libraryApps, "common", "Custom CS2 directory", "game");
+    var cfg = Directory.CreateDirectory(Path.Combine(game, "csgo", "cfg")).FullName;
+    Check(SteamCs2.FindConfigDirectory(new[] { steam }) is null, "incomplete CS2 install has no automatic destination");
+    var exeDir = Directory.CreateDirectory(Path.Combine(game, "bin", "win64")).FullName;
+    File.WriteAllText(Path.Combine(exeDir, "cs2.exe"), "");
+    Check(SteamCs2.FindConfigDirectory(new[] { steam }) == cfg, "locate CS2 in a secondary Steam library using the install manifest");
+    File.WriteAllText(libraryList, $$"""
+        "LibraryFolders"
+        {
+            "1" "{{escapedLibrary}}"
+        }
+        """);
+    Check(SteamCs2.FindConfigDirectory(new[] { steam }) == cfg, "locate CS2 from the older Steam library format");
+
+    const string repository = "https://github.com/creeper-kk/fys-ze-reward-overlay";
+    var releaseHandler = new FakeHandler { Body = """{"tag_name":"v1.2.10"}""" };
+    using var releaseClient = new HttpClient(releaseHandler);
+    var latestRelease = await ReleaseCheck.GetLatestAsync(repository, "1.2.9", releaseClient);
+    Check(latestRelease.Comparison > 0 && latestRelease.PageUrl == repository + "/releases/tag/v1.2.10",
+        "release check compares numeric version components and links to the new release");
+    Check((await ReleaseCheck.GetLatestAsync(repository, "1.2.10.0", releaseClient)).Comparison == 0 &&
+        (await ReleaseCheck.GetLatestAsync(repository, "1.3.0", releaseClient)).Comparison < 0,
+        "release check recognizes matching and newer local versions");
+    releaseHandler.Body = """{"tag_name":"latest"}""";
+    bool invalidRelease = false;
+    try { await ReleaseCheck.GetLatestAsync(repository, "1.2.9", releaseClient); }
+    catch (InvalidDataException) { invalidRelease = true; }
+    Check(invalidRelease, "release check reports an invalid tag");
+
     var input = Path.Combine(temporary, "broadcast.txt");
     File.WriteAllText(input, "地图: ze_lego\n关卡: 1", new UTF8Encoding(false));
     using (var writer = new FileStream(input, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
@@ -87,10 +148,12 @@ try
     var cachePath = Path.Combine(temporary, "cache", "ze_test.json");
     File.WriteAllText(cachePath, "broken"); handler.Fail = true; repo.Invalidate();
     Check((await repo.GetAsync("ze_test")).Rewards is null, "corrupted cache safely unavailable");
-    var settings = new Settings { Scale = 1.25, ToggleHotkey = "Ctrl+Shift+F8", Left = -100 };
+    var settings = new Settings { Scale = 1.25, ToggleHotkey = "Ctrl+Shift+F8", Left = -100, IsSvip = true };
     settings.Save(temporary);
     var loaded = Settings.Load(temporary);
     Check(loaded.Scale == 1.25 && loaded.ToggleHotkey == settings.ToggleHotkey && loaded.Left == -100, "settings persist including negative monitor coordinates");
+    Check(loaded.IsSvip && Settings.Import(Path.Combine(temporary, "settings.json")).IsSvip && !Settings.CreateDefault().IsSvip,
+        "SVIP persists in the profile and is off by default");
     settings.PollIntervalMilliseconds = 250; settings.RewardRefreshMinutes = 3;
     settings.OverlayFontFamily = "Consolas";
     settings.RowSpacing = 14;
@@ -132,6 +195,7 @@ try
     """);
     loaded = Settings.Load(temporary);
     Check(loaded.ToggleHotkey == "Alt+P" && loaded.MoveHotkey == "Alt+O" && loaded.BackgroundOpacity == 0.15 && loaded.Left == 2057, "upgrade preserves existing personal settings");
+    Check(!loaded.IsSvip, "existing profiles default to non-SVIP");
     Check(loaded.MapSource == MapSource.Broadcast && loaded.BroadcastPath == BroadcastFiles.DefaultPath, "existing settings default to the original TXT source");
     Check(loaded.RowSpacing == 0 && loaded.ColumnSpacing == 0, "old settings retain the default spacing");
     Check(loaded.ValueAlignment == RewardValueAlignment.Right, "old settings retain right-aligned values");

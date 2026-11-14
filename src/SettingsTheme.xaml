@@ -177,6 +177,41 @@
         </Setter>
     </Style>
 
+    <Style x:Key="LabeledSwitch" TargetType="CheckBox">
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <Border x:Name="Chrome" Background="Transparent" CornerRadius="7" BorderBrush="Transparent"
+                            BorderThickness="1" Padding="8,6">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="Off" Text="否" Foreground="{StaticResource AccentOutline}" VerticalAlignment="Center"/>
+                            <Border x:Name="Rail" Background="#48484F" CornerRadius="11" Width="38" Height="22"
+                                    VerticalAlignment="Center" Padding="3" Margin="9,0">
+                                <Ellipse x:Name="Thumb" Fill="#F5F5F6" Width="16" Height="16" HorizontalAlignment="Left"/>
+                            </Border>
+                            <TextBlock x:Name="On" Text="是" Foreground="#A1A1AA" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Chrome" Property="Background" Value="{StaticResource Surface}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentOutline}"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Rail" Property="Background" Value="{StaticResource Accent}"/>
+                            <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right"/>
+                            <Setter TargetName="Off" Property="Foreground" Value="#A1A1AA"/>
+                            <Setter TargetName="On" Property="Foreground" Value="{StaticResource AccentOutline}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style TargetType="ComboBox">
         <Setter Property="Foreground" Value="{StaticResource Text}"/>
         <Setter Property="Background" Value="{StaticResource Surface}"/>

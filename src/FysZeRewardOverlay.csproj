@@ -7,7 +7,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>FysZeRewardOverlay</AssemblyName>
-    <Version>1.2.3</Version>
+    <Version>1.2.4</Version>
     <Authors>creeper_kk</Authors>
     <RepositoryUrl>https://github.com/creeper-kk/fys-ze-reward-overlay</RepositoryUrl>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -18,5 +18,6 @@
   <ItemGroup>
     <Resource Include="$(ApplicationIcon)" />
     <AssemblyMetadata Include="RepositoryUrl" Value="$(RepositoryUrl)" />
+    <InternalsVisibleTo Include="Overlay.Tests" />
   </ItemGroup>
 </Project>

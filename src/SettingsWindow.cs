@@ -5,8 +5,10 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -21,6 +23,7 @@ public sealed class SettingsWindow : Window
 {
     private readonly RadioButton txtSource;
     private readonly RadioButton gsiSource;
+    private readonly CheckBox isSvip = new();
     private readonly TextBox path = new();
     private readonly TextBlock pathStatus = OverlayWindow.Text("", 11, "#A1A1AA");
     private readonly TextBox pollSeconds = new();
@@ -164,8 +167,19 @@ public sealed class SettingsWindow : Window
         gsiSource = CreateSourceRow("CS2 GSI");
         panel.Children.Add(gsiSource);
         var gsiPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 8) };
-        gsiPanel.Children.Add(Button("保存 GSI 配置文件…", SaveGsiConfig, true));
-        Note(gsiPanel, @"将配置保存到 CS2 的 \steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg 后重启游戏，即可读取计分板内容。选择 GSI 作为地图来源时，也可按 CT 比分推断关卡。");
+        var gsiActions = new WrapPanel();
+        var autoConfig = Button("自动配置", null, true);
+        var gsiConfigStatus = OverlayWindow.Text("", 11, "#A1A1AA");
+        gsiConfigStatus.TextWrapping = TextWrapping.Wrap;
+        gsiConfigStatus.Margin = new Thickness(0, 8, 0, 0);
+        gsiConfigStatus.Visibility = Visibility.Collapsed;
+        AutomationProperties.SetLiveSetting(gsiConfigStatus, AutomationLiveSetting.Polite);
+        autoConfig.Click += async (_, _) => await ConfigureGsiAutomatically(autoConfig, gsiConfigStatus);
+        gsiActions.Children.Add(autoConfig);
+        gsiActions.Children.Add(Button("手动配置", SaveGsiConfig, false));
+        gsiPanel.Children.Add(gsiActions);
+        gsiPanel.Children.Add(gsiConfigStatus);
+        Note(gsiPanel, @"自动配置会写入并打开 CS2 的 game\csgo\cfg 文件夹。配置后重启 CS2。");
         var adjustments = new WrapPanel { IsEnabled = false, Margin = new Thickness(0, 0, 0, 8) };
         if (adjustStage is not null)
         {
@@ -198,10 +212,20 @@ public sealed class SettingsWindow : Window
         fileActions.Children.Add(Button("恢复默认路径", () => path.Text = BroadcastFiles.DefaultPath, false));
         panel.Children.Add(fileActions);
         pathStatus.TextWrapping = TextWrapping.Wrap;
-        pathStatus.Margin = new Thickness(0, 0, 0, 20);
+        pathStatus.Margin = new Thickness(0, 0, 0, 8);
         panel.Children.Add(pathStatus);
         txtSource.Checked += (_, _) => OnMapSourceChanged();
         gsiSource.Checked += (_, _) => OnMapSourceChanged();
+        var groupRow = new DockPanel { Margin = new Thickness(0, 0, 0, 16) };
+        isSvip.Style = (Style)FindResource("LabeledSwitch");
+        AutomationProperties.SetName(isSvip, "是否为SVIP");
+        isSvip.VerticalAlignment = VerticalAlignment.Center;
+        isSvip.Checked += (_, _) => UpdatePreview();
+        isSvip.Unchecked += (_, _) => UpdatePreview();
+        DockPanel.SetDock(isSvip, Dock.Right);
+        groupRow.Children.Add(isSvip);
+        groupRow.Children.Add(OverlayWindow.Text("是否为SVIP", 13, "#E6E6EB", true));
+        panel.Children.Add(groupRow);
         Label(panel, "数据更新频率");
         AddNumber(panel, "地图 / 关卡读取", pollSeconds, "秒（0.2～60）");
         AddNumber(panel, "奖励联网更新", rewardMinutes, "分钟（1～1440）");
@@ -396,6 +420,7 @@ public sealed class SettingsWindow : Window
         loadingSettings = true;
         txtSource.IsChecked = next.MapSource == MapSource.Broadcast;
         gsiSource.IsChecked = next.MapSource == MapSource.Gsi;
+        isSvip.IsChecked = next.IsSvip;
         path.Text = next.BroadcastPath;
         pollSeconds.Text = (next.PollIntervalMilliseconds / 1000d).ToString("0.###", CultureInfo.CurrentCulture);
         rewardMinutes.Text = next.RewardRefreshMinutes.ToString(CultureInfo.CurrentCulture);
@@ -430,6 +455,49 @@ public sealed class SettingsWindow : Window
         Label(panel, "ZE 奖励悬浮窗");
         Note(panel, "版本 " + version);
         Note(panel, "作者 creeper_kk");
+        var updateActions = new WrapPanel();
+        var check = Button("检查更新", null, true);
+        string releasePage = "";
+        var openRelease = Button("打开 Release 页面", () => OpenLink(releasePage), false);
+        openRelease.Visibility = Visibility.Collapsed;
+        updateActions.Children.Add(check);
+        updateActions.Children.Add(openRelease);
+        panel.Children.Add(updateActions);
+        var updateStatus = OverlayWindow.Text("", 12, "#A1A1AA");
+        updateStatus.TextWrapping = TextWrapping.Wrap;
+        updateStatus.Margin = new Thickness(0, 10, 0, 12);
+        AutomationProperties.SetLiveSetting(updateStatus, AutomationLiveSetting.Polite);
+        panel.Children.Add(updateStatus);
+        check.Click += async (_, _) =>
+        {
+            check.IsEnabled = false;
+            openRelease.Visibility = Visibility.Collapsed;
+            updateStatus.Foreground = OverlayWindow.Brush("#A1A1AA");
+            updateStatus.Text = "正在检查更新…";
+            try
+            {
+                var release = await ReleaseCheck.GetLatestAsync(repository, version);
+                releasePage = release.PageUrl;
+                updateStatus.Text = release.Comparison switch
+                {
+                    > 0 => $"发现新版本 {release.Tag}，当前版本为 {version}。",
+                    0 => $"已是最新版本 {release.Tag}。",
+                    _ => $"当前版本 {version} 高于已发布版本 {release.Tag}。"
+                };
+                openRelease.Visibility = release.Comparison > 0 ? Visibility.Visible : Visibility.Collapsed;
+            }
+            catch (TaskCanceledException)
+            {
+                updateStatus.Foreground = OverlayWindow.Brush("#FFC2BC");
+                updateStatus.Text = "检查更新超时，请重试。";
+            }
+            catch (Exception ex) when (ex is HttpRequestException or InvalidDataException or IOException or JsonException)
+            {
+                updateStatus.Foreground = OverlayWindow.Brush("#FFC2BC");
+                updateStatus.Text = "检查更新失败：" + ex.Message;
+            }
+            finally { check.IsEnabled = true; }
+        };
         Label(panel, "GitHub 仓库");
         var link = Button(repository, () => OpenLink(repository), false);
         link.Content = new TextBlock { Text = repository, TextWrapping = TextWrapping.Wrap };
@@ -901,6 +969,46 @@ public sealed class SettingsWindow : Window
         SetSuccess(success);
     }
 
+    private static async Task ConfigureGsiAutomatically(Button button, TextBlock status)
+    {
+        button.IsEnabled = false;
+        status.Visibility = Visibility.Visible;
+        status.Foreground = OverlayWindow.Brush("#A1A1AA");
+        status.Text = "正在查找 CS2 配置文件夹…";
+        try
+        {
+            string? directory = await Task.Run(() =>
+            {
+                var config = SteamCs2.FindConfigDirectory();
+                if (config is not null)
+                    AtomicFile.Write(Path.Combine(config, GsiListener.ConfigFileName), GsiListener.Config);
+                return config;
+            });
+            if (directory is null)
+            {
+                status.Foreground = OverlayWindow.Brush("#FFC2BC");
+                status.Text = "未找到 CS2 的 cfg 文件夹。请确认 Steam 已完成安装，或使用手动配置。";
+                return;
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true });
+                status.Foreground = OverlayWindow.Brush("#A4ED86");
+                status.Text = "GSI 配置已保存，已打开 cfg 文件夹。请重启 CS2。";
+            }
+            catch (Win32Exception)
+            {
+                status.Text = $"GSI 配置已保存，请重启 CS2。请在资源管理器中打开 {directory}。";
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            status.Foreground = OverlayWindow.Brush("#FFC2BC");
+            status.Text = "GSI 自动配置失败：" + ex.Message;
+        }
+        finally { button.IsEnabled = true; }
+    }
+
     private void SaveGsiConfig()
     {
         var dialog = new Microsoft.Win32.SaveFileDialog
@@ -932,7 +1040,7 @@ public sealed class SettingsWindow : Window
         box.Foreground = OverlayWindow.Brush("#EFF5FD"); box.BorderBrush = OverlayWindow.Brush("#38383D");
         box.CaretBrush = Brushes.White; box.FontSize = 12;
     }
-    private Button Button(string text, Action action, bool primary)
+    private Button Button(string text, Action? action, bool primary)
     {
         var button = new Button
         {
@@ -940,7 +1048,7 @@ public sealed class SettingsWindow : Window
             Margin = new Thickness(0, 0, 8, 0), HorizontalAlignment = HorizontalAlignment.Left
         };
         if (primary) button.Background = OverlayWindow.Brush("#006BD0");
-        button.Click += (_, _) => action();
+        if (action is not null) button.Click += (_, _) => action();
         return button;
     }
 
@@ -979,6 +1087,7 @@ public sealed class SettingsWindow : Window
     {
         var draft = currentSettings().Copy();
         draft.MapSource = UsesGsi ? MapSource.Gsi : MapSource.Broadcast;
+        draft.IsSvip = isSvip.IsChecked == true;
         draft.ToggleHotkey = shortcuts[0].Text;
         draft.MoveHotkey = shortcuts[1].Text;
         draft.SettingsHotkey = shortcuts[2].Text;

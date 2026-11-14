@@ -166,7 +166,7 @@ internal sealed class RewardCard
         {
             var rank = DamageProgress.Calculate(info.Kills, reward.RankDamage);
             var econ = DamageProgress.Calculate(info.Kills, reward.EconDamage);
-            SetPassReward(values[0], rankProgress, reward.RankPasses, rank, lastRankProgress);
+            SetPassReward(values[0], rankProgress, reward.GetRankPasses(settings.IsSvip), rank, lastRankProgress);
             values[1].Text = DisplayInfo.Ratio(reward.RankDamage);
             SetPassReward(values[2], econProgress, reward.EconPasses, econ, lastEconProgress);
             values[3].Text = DisplayInfo.Ratio(reward.EconDamage);
@@ -194,7 +194,7 @@ internal sealed class RewardCard
         return bar;
     }
 
-    private static void SetPassReward(TextBlock text, Grid bar, int baseReward, DamageProgress? progress, DamageProgress? previous)
+    private static void SetPassReward(TextBlock text, Grid bar, long baseReward, DamageProgress? progress, DamageProgress? previous)
     {
         text.Text = baseReward.ToString(CultureInfo.CurrentCulture);
         bar.Visibility = progress.HasValue ? Visibility.Visible : Visibility.Collapsed;
@@ -295,6 +295,7 @@ internal sealed class RewardCard
 
     internal void ApplyAppearance(Settings next)
     {
+        bool svipChanged = settings.IsSvip != next.IsSvip;
         settings = next;
         System.Windows.Documents.TextElement.SetFontFamily(card, FontCatalog.Resolve(settings.OverlayFontFamily));
         foreach (var (field, text, defaults) in styledText)
@@ -317,7 +318,8 @@ internal sealed class RewardCard
         editButtons.Visibility = settings.Locked ? Visibility.Collapsed : Visibility.Visible;
         heading.Text = settings.Locked ? "ZE  /  通关奖励" : "ZE  /  拖动模式";
         hint.Text = settings.Locked ? settings.ToggleHotkey + " 显隐   ·   " + settings.MoveHotkey + " 拖动" : "按住卡片拖动 · Esc 锁定 · 右键设置";
-        ApplyInformationVisibility();
+        if (svipChanged && lastDisplay is { } info) Render(info, inputUnavailable, demo);
+        else ApplyInformationVisibility();
     }
 
     private void ApplySourceColor()
