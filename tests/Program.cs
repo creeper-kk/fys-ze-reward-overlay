@@ -194,14 +194,23 @@ try
         Check(await Push("""{"map":{"name":"ZE_LEGO 僵尸逃跑①","round":4,"team_ct":{"score":2}}}""") == HttpStatusCode.OK, "loopback receiver accepts a CS2 GSI POST");
         var mapOnly = gsi.Read("");
         Check(mapOnly is { Map: "ze_lego", Stage: 3, CtScore: 2, FileUnavailable: false }, "GSI uses CT score plus one independently of the round number");
+        var singleStage = data with { Rewards = new() { [4] = parsed[4] } };
+        Check(DisplayInfo.Resolve(mapOnly with { Stage = 5 }, singleStage) is { Available: true, Stage: 4, StageInferred: false, InferredStageMissingReward: false } single &&
+            single.Reward == parsed[4], "GSI uses the only configured stage regardless of CT score and offset");
+        Check(DisplayInfo.Resolve(mapOnly, null) is { Stage: null, StageInferred: false }, "GSI waits for the reward config before displaying an inferred stage");
         var missing = DisplayInfo.Resolve(mapOnly, data);
         Check(!missing.Available && missing.InferredStageMissingReward, "a missing inferred stage is flagged for manual correction");
         Check(!DisplayInfo.Resolve(mapOnly, data with { Rewards = null }).InferredStageMissingReward, "a retrieval failure is not a missing stage");
         File.WriteAllText(input, "地图: ze_lego\n译名: 乐高\n关卡: 4/4");
         var matched = gsi.Read(input);
         Check(matched.Title == "乐高" && matched.CtScore is null && DisplayInfo.Resolve(matched, data).Reward == parsed[4], "same-map TXT takes precedence over a score");
+        Check(!DisplayInfo.Resolve(matched with { Stage = 1 }, singleStage).Available, "an explicit TXT stage still requires an exact reward match");
         Check(await Push("""{"map":{"name":"ze_lego 僵尸逃跑①"},"provider":{"steamid":"101"},"player":{"steamid":"101","match_stats":{"kills":20}}}""") == HttpStatusCode.OK &&
             DisplayInfo.Resolve(gsi.Read(input), data).Kills == 20, "local kills supplement a recognized TXT stage");
+        var noScore = gsi.Read("");
+        Check(DisplayInfo.Resolve(noScore, singleStage with { Offline = true }) is { Available: true, Stage: 4, StageInferred: false, Kills: 20 } cachedSingle &&
+            cachedSingle.Source.StartsWith("离线缓存"), "one cached stage is available without a CT score and preserves kill progress");
+        Check(!DisplayInfo.Resolve(noScore, data).Available, "multiple reward stages still require a TXT stage or CT score");
         Check(await Push("""{"map":{"name":"ze_lego 僵尸逃跑①"},"provider":{"steamid":"101"},"player":{"steamid":"102","match_stats":{"kills":60}}}""") == HttpStatusCode.OK &&
             gsi.Read(input).Kills is null, "spectating another player clears the local kill progress");
         Check(await Push("""{"map":{"name":"ZE_LEGO 僵尸逃跑①","team_ct":{"score":2}}}""") == HttpStatusCode.OK, "restore score for stage tests");

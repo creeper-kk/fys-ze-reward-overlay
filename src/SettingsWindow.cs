@@ -471,12 +471,18 @@ public sealed class SettingsWindow : Window
         return option;
     }
 
-    internal void UpdateInferredStage(Broadcast broadcast, int offset)
+    internal void UpdateInferredStage(Broadcast broadcast, RewardData? data, int offset)
     {
-        inferredStage.IsEnabled = broadcast.CtScore.HasValue;
-        inferredStage.Text = broadcast.CtScore.HasValue
-            ? $"CT 比分 {broadcast.CtScore}  ·  推断第 {broadcast.Stage} 关  ·  偏移 {offset:+0;-0;0}"
-            : broadcast.Stage.HasValue ? $"叠层文本已识别第 {broadcast.Stage} 关" : "等待比分推断关卡";
+        int? configuredStage = broadcast.GetSingleRewardStage(data);
+        inferredStage.IsEnabled = data is not null && configuredStage is null && broadcast.CtScore.HasValue;
+        if (configuredStage is int stage)
+            inferredStage.Text = $"单关地图  ·  奖励配置为第 {stage} 关";
+        else if (broadcast.IsGsiStageFallback && data is null)
+            inferredStage.Text = "正在获取该地图奖励…";
+        else if (inferredStage.IsEnabled)
+            inferredStage.Text = $"CT 比分 {broadcast.CtScore}  ·  推断第 {broadcast.Stage} 关  ·  偏移 {offset:+0;-0;0}";
+        else
+            inferredStage.Text = broadcast.Stage.HasValue ? $"叠层文本已识别第 {broadcast.Stage} 关" : "等待比分推断关卡";
     }
 
     internal bool CaptureRegisteredShortcut(string shortcut)

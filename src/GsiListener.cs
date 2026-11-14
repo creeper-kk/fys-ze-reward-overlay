@@ -101,6 +101,7 @@ public sealed class GsiListener : IDisposable
                 game = game with { Title = broadcast.Title, StageText = broadcast.StageText };
             }
         }
+        game = game with { IsGsiStageFallback = true };
         return update.CtScore is int score
             ? game with { Stage = score + 1, CtScore = score }
             : game with { Error = game.StageText.Length > 0

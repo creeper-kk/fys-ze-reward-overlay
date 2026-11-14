@@ -15,10 +15,15 @@ namespace FysZeRewardOverlay;
 public record Broadcast(string Map, string Title, int? Stage, string StageText, string Error, bool FileUnavailable = false)
 {
     internal int? ServerNumber { get; init; }
+    internal bool IsGsiStageFallback { get; init; }
     public int? CtScore { get; init; }
     public int? Kills { get; init; }
     public bool IsZe => Regex.IsMatch(Map, @"^ze_[a-z0-9_-]{1,120}$", RegexOptions.IgnoreCase);
+    internal bool CanFetchRewards => IsZe && (IsGsiStageFallback || (Stage.HasValue && Error.Length == 0));
     public string Identity => Map + "|" + Title + "|" + Stage + "|" + StageText + "|" + Error + "|" + FileUnavailable + "|" + ServerNumber + "|" + CtScore;
+
+    internal int? GetSingleRewardStage(RewardData? data) =>
+        IsGsiStageFallback && data?.Rewards is { Count: 1 } rewards ? rewards.Keys.Single() : null;
 }
 
 internal static class FysServer
@@ -136,18 +141,24 @@ public record DisplayInfo(bool Available, string Map, string Title, int? Stage, 
     public int? Kills { get; init; }
     public static DisplayInfo Resolve(Broadcast broadcast, RewardData? data)
     {
-        DisplayInfo Fail(string reason) => new(false, broadcast.Map, broadcast.Title, broadcast.Stage, null, "", reason)
-            { StageInferred = broadcast.CtScore.HasValue };
-        if (broadcast.Error.Length > 0) return Fail(broadcast.Error);
+        if (broadcast.IsGsiStageFallback && data is null)
+            return new(false, broadcast.Map, broadcast.Title, null, null, "", "正在获取该地图奖励…");
+
+        int? configuredStage = broadcast.GetSingleRewardStage(data);
+        int? stage = configuredStage ?? broadcast.Stage;
+        bool inferred = configuredStage is null && broadcast.CtScore.HasValue;
+        DisplayInfo Fail(string reason) => new(false, broadcast.Map, broadcast.Title, stage, null, "", reason)
+            { StageInferred = inferred };
+        if (configuredStage is null && broadcast.Error.Length > 0) return Fail(broadcast.Error);
         if (!broadcast.IsZe) return Fail("当前不是 ZE 地图");
-        if (broadcast.Stage is null) return Fail(broadcast.StageText.Length == 0 ? BroadcastFiles.DisplayName + "未提供当前关卡" : "无法识别关卡：" + broadcast.StageText);
+        if (stage is null) return Fail(broadcast.StageText.Length == 0 ? BroadcastFiles.DisplayName + "未提供当前关卡" : "无法识别关卡：" + broadcast.StageText);
         if (data is null) return Fail("正在获取该地图奖励…");
         if (data.Rewards is null) return Fail(data.Error);
-        if (!data.Rewards.TryGetValue(broadcast.Stage.Value, out var reward))
-            return Fail("未找到第 " + broadcast.Stage + " 关的奖励配置") with { InferredStageMissingReward = broadcast.CtScore.HasValue };
+        if (!data.Rewards.TryGetValue(stage.Value, out var reward))
+            return Fail("未找到第 " + stage + " 关的奖励配置") with { InferredStageMissingReward = inferred };
         var source = data.Offline ? "离线缓存 · " + data.FetchedAt?.ToLocalTime().ToString("MM-dd HH:mm") : "官方配置 · 已同步";
-        return new(true, broadcast.Map, broadcast.Title, broadcast.Stage, reward, source, data.Offline ? "联网失败，使用上次成功获取的配置" : "伤害转化比 = 伤害 : 1 点货币")
-            { StageInferred = broadcast.CtScore.HasValue, Kills = broadcast.Kills };
+        return new(true, broadcast.Map, broadcast.Title, stage, reward, source, data.Offline ? "联网失败，使用上次成功获取的配置" : "伤害转化比 = 伤害 : 1 点货币")
+            { StageInferred = inferred, Kills = broadcast.Kills };
     }
     public static string Ratio(int number) => number == 0 ? "未启用" : number.ToString("N0", CultureInfo.InvariantCulture) + " : 1";
 }
@@ -176,6 +187,7 @@ public sealed class RewardRepository : IDisposable
         this.http.DefaultRequestHeaders.UserAgent.ParseAdd("FysZeRewardOverlay/1.0");
     }
     public void Invalidate() => memory.Clear();
+    internal RewardData? GetLastResult(string map) => memory.TryGetValue(map, out var existing) ? existing.Data : null;
     public async Task<RewardData> GetAsync(string map)
     {
         if (!Regex.IsMatch(map, @"^ze_[a-z0-9_-]{1,120}$")) return new(null, null, false, "地图名称无效");

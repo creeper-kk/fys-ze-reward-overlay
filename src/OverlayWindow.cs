@@ -147,7 +147,8 @@ public sealed class OverlayWindow : Window
             return;
         }
         var broadcast = ReadMap();
-        settingsWindow?.UpdateInferredStage(broadcast, stageOffset);
+        var data = rewards.GetLastResult(broadcast.Map);
+        settingsWindow?.UpdateInferredStage(broadcast, data, stageOffset);
         inputUnavailable = broadcast.FileUnavailable;
         if (inputUnavailable && interactiveSetup && notifiedMissingPath != settings.BroadcastPath)
         {
@@ -160,13 +161,13 @@ public sealed class OverlayWindow : Window
         {
             identity = broadcast.Identity;
             generation++;
-            Render(DisplayInfo.Resolve(broadcast, null));
+            Render(DisplayInfo.Resolve(broadcast, broadcast.IsGsiStageFallback ? data : null));
         }
         else if (lastDisplay is { Available: true } displayed && displayed.Kills != broadcast.Kills)
         {
             Render(displayed with { Kills = broadcast.Kills });
         }
-        if (!broadcast.IsZe || broadcast.Stage is null || broadcast.Error.Length > 0 || loading) return;
+        if (!broadcast.CanFetchRewards || loading) return;
         FetchAndRender(broadcast, generation);
     }
 
@@ -181,7 +182,11 @@ public sealed class OverlayWindow : Window
             if (!quitting)
             {
                 var latest = ReadMap();
-                if (version == generation && latest.Identity == broadcast.Identity) Render(DisplayInfo.Resolve(latest, data));
+                if (version == generation && latest.Identity == broadcast.Identity)
+                {
+                    settingsWindow?.UpdateInferredStage(latest, data, stageOffset);
+                    Render(DisplayInfo.Resolve(latest, data));
+                }
                 else retry = true;
             }
         }
@@ -232,6 +237,8 @@ public sealed class OverlayWindow : Window
         if (demo || settings.MapSource != MapSource.Gsi) return;
         var current = ReadMap();
         if (current.CtScore is not int score || current.Stage is not int stage) return;
+        var data = rewards.GetLastResult(current.Map);
+        if (data is null || current.GetSingleRewardStage(data).HasValue) return;
         int adjusted = (int)Math.Clamp((long)stage + step, 1, int.MaxValue);
         if (adjusted == stage) return;
         stageOffset = adjusted - (score + 1);
@@ -382,7 +389,7 @@ public sealed class OverlayWindow : Window
         if (!demo && settings.MapSource == MapSource.Gsi)
         {
             var broadcast = ReadMap();
-            settingsWindow.UpdateInferredStage(broadcast, stageOffset);
+            settingsWindow.UpdateInferredStage(broadcast, rewards.GetLastResult(broadcast.Map), stageOffset);
         }
     }
     private string? ApplySettings(Settings next, bool keepPositionAndLock = true)
