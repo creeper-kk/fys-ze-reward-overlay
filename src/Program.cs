@@ -9,6 +9,8 @@ namespace FysZeRewardOverlay;
 
 internal static class Program
 {
+    internal static Uri AppIconUri { get; } = new("Assets/App.ico", UriKind.Relative);
+
     [STAThread]
     public static int Main(string[] args)
     {

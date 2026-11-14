@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace FysZeRewardOverlay;
 
@@ -32,6 +33,7 @@ public sealed class SettingsWindow : Window
         this.initial = initial;
         this.apply = apply;
         Title = "ZE 奖励悬浮窗 · 设置";
+        Icon = BitmapFrame.Create(new Uri(new Uri("pack://application:,,,/"), Program.AppIconUri));
         Width = 640; Height = 740; MinWidth = 540; MinHeight = 550;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = OverlayWindow.Brush("#111A24");

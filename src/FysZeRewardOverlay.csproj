@@ -9,7 +9,11 @@
     <AssemblyName>FysZeRewardOverlay</AssemblyName>
     <Version>1.1.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\App.ico</ApplicationIcon>
     <!-- WPF owns the windows; WinForms is used only for NotifyIcon. DPI is declared in the WPF manifest. -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="$(ApplicationIcon)" />
+  </ItemGroup>
 </Project>

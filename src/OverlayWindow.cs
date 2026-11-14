@@ -22,6 +22,7 @@ public sealed class OverlayWindow : Window
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private HotkeyManager? hotkeys;
     private Forms.NotifyIcon? tray;
+    private System.Drawing.Icon? trayIcon;
     private SettingsWindow? settingsWindow;
     private readonly Border card = new();
     private readonly StackPanel content = new();
@@ -86,7 +87,14 @@ public sealed class OverlayWindow : Window
         };
         timer.Tick += (_, _) => Tick();
         Closing += (_, e) => { if (!quitting) { e.Cancel = true; Hide(); } };
-        Closed += (_, _) => { timer.Stop(); hotkeys?.Dispose(); tray?.Dispose(); rewards.Dispose(); };
+        Closed += (_, _) =>
+        {
+            timer.Stop();
+            hotkeys?.Dispose();
+            tray?.Dispose();
+            trayIcon?.Dispose();
+            rewards.Dispose();
+        };
         MouseLeftButtonDown += (_, e) =>
         {
             if (settings.Locked || e.OriginalSource is Button) return;
@@ -267,7 +275,9 @@ public sealed class OverlayWindow : Window
 
     private void CreateTray()
     {
-        tray = new Forms.NotifyIcon { Icon = System.Drawing.SystemIcons.Information, Visible = true, Text = "ZE 奖励悬浮窗" };
+        using var iconResource = Application.GetResourceStream(Program.AppIconUri).Stream;
+        trayIcon = new System.Drawing.Icon(iconResource, Forms.SystemInformation.SmallIconSize);
+        tray = new Forms.NotifyIcon { Icon = trayIcon, Visible = true, Text = "ZE 奖励悬浮窗" };
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("显示 / 隐藏", null, (_, _) => Dispatcher.Invoke(ToggleVisibility));
         menu.Items.Add("切换拖动 / 锁定", null, (_, _) => Dispatcher.Invoke(ToggleLock));
