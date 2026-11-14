@@ -17,8 +17,8 @@ public sealed class Settings
 {
     internal const double DefaultScale = 0.8;
     internal const double DefaultBackgroundOpacity = 0.35;
-    internal const double DefaultLeft = 2204;
-    internal const double DefaultTop = 365;
+    internal const double DefaultLeft = 2234;
+    internal const double DefaultTop = 250;
     internal const int MaxRowSpacing = 48;
     internal const int MinColumnSpacing = -48;
     internal const int MaxColumnSpacing = 128;
@@ -49,37 +49,88 @@ public sealed class Settings
     public double? Left { get; set; }
     public double? Top { get; set; }
     public bool Locked { get; set; } = true;
+
+    // Property initializers preserve the defaults of older, partial settings files.
+    public static Settings CreateDefault() => new()
+    {
+        ToggleHotkey = "Alt+P",
+        MoveHotkey = "Alt+O",
+        Scale = 0.85,
+        RowSpacing = 6,
+        ColumnSpacing = -24,
+        ValueAlignment = RewardValueAlignment.Left,
+        PollIntervalMilliseconds = 10000,
+        RewardRefreshMinutes = 1440,
+        GlobalTextStyle = new(Size: 28),
+        HiddenFields = OverlayField.Heading | OverlayField.MapTitle | OverlayField.Stage |
+            OverlayField.Source | OverlayField.HotkeyHint | OverlayField.ErrorDetail,
+        Left = DefaultLeft,
+        Top = DefaultTop
+    };
+
     public static Settings Load(string directory)
     {
         try
         {
-            var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(Path.Combine(directory, "settings.json"))) ?? new();
-            s.BackgroundOpacity = double.IsFinite(s.BackgroundOpacity) ? Math.Clamp(s.BackgroundOpacity, 0, 0.95) : DefaultBackgroundOpacity;
-            s.Scale = double.IsFinite(s.Scale) ? Math.Clamp(s.Scale, 0.7, 1.8) : DefaultScale;
-            s.RowSpacing = Math.Clamp(s.RowSpacing, 0, MaxRowSpacing);
-            s.ColumnSpacing = Math.Clamp(s.ColumnSpacing, MinColumnSpacing, MaxColumnSpacing);
-            if (!Enum.IsDefined(s.ValueAlignment)) s.ValueAlignment = RewardValueAlignment.Right;
-            if (s.Left.HasValue && !double.IsFinite(s.Left.Value)) s.Left = null;
-            if (s.Top.HasValue && !double.IsFinite(s.Top.Value)) s.Top = null;
-            if (!Enum.IsDefined(s.MapSource)) s.MapSource = MapSource.Broadcast;
-            if (string.IsNullOrWhiteSpace(s.BroadcastPath)) s.BroadcastPath = s.MapSource == MapSource.Gsi ? "" : BroadcastFiles.DefaultPath;
-            s.PollIntervalMilliseconds = Math.Clamp(s.PollIntervalMilliseconds, 200, 60000);
-            s.RewardRefreshMinutes = Math.Clamp(s.RewardRefreshMinutes, 1, 1440);
-            if (string.IsNullOrWhiteSpace(s.OverlayFontFamily)) s.OverlayFontFamily = FontCatalog.DefaultName;
-            s.GlobalTextStyle = s.GlobalTextStyle?.Validated() ?? new();
-            s.FieldTextStyles = (s.FieldTextStyles ?? new())
-                .Where(entry => OverlayTypography.Labels.ContainsKey(entry.Key) && entry.Value is not null)
-                .ToDictionary(entry => entry.Key, entry => entry.Value.Validated());
-            s.HiddenFields &= OverlayField.All;
-            return s;
+            var settings = JsonSerializer.Deserialize<Settings>(File.ReadAllText(Path.Combine(directory, "settings.json")));
+            return settings?.Validate() ?? CreateDefault();
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { return new(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
+        {
+            return CreateDefault();
+        }
     }
+
+    public static Settings Import(string path)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var root = document.RootElement;
+        var writableProperties = JsonSerializerOptions.Default.GetTypeInfo(typeof(Settings)).Properties;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.EnumerateObject().Any(property => writableProperties.Any(candidate => candidate.Set is not null && candidate.Name == property.Name)))
+            throw new JsonException("请选择 ZE 奖励悬浮窗的 JSON 配置文件。");
+
+        var settings = root.Deserialize<Settings>()!.Validate();
+        if (settings.BroadcastPath.Length > 0)
+        {
+            if (!BroadcastFiles.TryNormalize(settings.BroadcastPath, out var normalized))
+                throw new JsonException("配置中的直播助手叠层文本路径无效，请填写绝对路径。");
+            settings.BroadcastPath = normalized;
+        }
+        return settings;
+    }
+
+    private Settings Validate()
+    {
+        BackgroundOpacity = double.IsFinite(BackgroundOpacity) ? Math.Clamp(BackgroundOpacity, 0, 0.95) : DefaultBackgroundOpacity;
+        Scale = double.IsFinite(Scale) ? Math.Clamp(Scale, 0.7, 1.8) : DefaultScale;
+        RowSpacing = Math.Clamp(RowSpacing, 0, MaxRowSpacing);
+        ColumnSpacing = Math.Clamp(ColumnSpacing, MinColumnSpacing, MaxColumnSpacing);
+        if (!Enum.IsDefined(ValueAlignment)) ValueAlignment = RewardValueAlignment.Right;
+        if (Left.HasValue && !double.IsFinite(Left.Value)) Left = null;
+        if (Top.HasValue && !double.IsFinite(Top.Value)) Top = null;
+        if (!Enum.IsDefined(MapSource)) MapSource = MapSource.Broadcast;
+        if (string.IsNullOrWhiteSpace(BroadcastPath)) BroadcastPath = MapSource == MapSource.Gsi ? "" : BroadcastFiles.DefaultPath;
+        PollIntervalMilliseconds = Math.Clamp(PollIntervalMilliseconds, 200, 60000);
+        RewardRefreshMinutes = Math.Clamp(RewardRefreshMinutes, 1, 1440);
+        if (string.IsNullOrWhiteSpace(OverlayFontFamily)) OverlayFontFamily = FontCatalog.DefaultName;
+        GlobalTextStyle = GlobalTextStyle?.Validated() ?? new();
+        FieldTextStyles = (FieldTextStyles ?? new())
+            .Where(entry => OverlayTypography.Labels.ContainsKey(entry.Key) && entry.Value is not null)
+            .ToDictionary(entry => entry.Key, entry => entry.Value.Validated());
+        HiddenFields &= OverlayField.All;
+        return this;
+    }
+
     public void Save(string directory)
     {
         Directory.CreateDirectory(directory);
-        AtomicFile.Write(Path.Combine(directory, "settings.json"), JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        Export(Path.Combine(directory, "settings.json"));
     }
+
+    public void Export(string path) =>
+        AtomicFile.Write(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+
     public Settings Copy()
     {
         var copy = (Settings)MemberwiseClone();

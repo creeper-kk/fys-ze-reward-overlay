@@ -144,6 +144,34 @@ try
     loaded = Settings.Load(temporary);
     Check(loaded.PollIntervalMilliseconds == 200 && loaded.RewardRefreshMinutes == 1440, "out of range stored intervals are clamped");
 
+    var exported = Path.Combine(temporary, "backup.json");
+    settings.Locked = false;
+    settings.Export(exported);
+    var imported = Settings.Import(exported);
+    imported.Export(exported);
+    Check(imported.MapSource == MapSource.Gsi && imported.BroadcastPath == "" && imported.Left == -100 &&
+        !imported.Locked && imported.ValueAlignment == RewardValueAlignment.Center &&
+        imported.TextStyleFor(OverlayField.Unavailable).Color == "#ABCDEF",
+        "configuration round trip preserves source, window placement, lock and appearance");
+    var defaultSettings = Settings.Load(Path.Combine(temporary, "fresh"));
+    Check(defaultSettings.ToggleHotkey == "Alt+P" && defaultSettings.MoveHotkey == "Alt+O" &&
+        defaultSettings.Scale == 0.85 && defaultSettings.RowSpacing == 6 && defaultSettings.ColumnSpacing == -24 &&
+        defaultSettings.ValueAlignment == RewardValueAlignment.Left && defaultSettings.GlobalTextStyle.Size == 28 &&
+        defaultSettings.PollIntervalMilliseconds == 10000 && defaultSettings.RewardRefreshMinutes == 1440 &&
+        defaultSettings.Left == 2234 && defaultSettings.Top == 250 && defaultSettings.Locked &&
+        defaultSettings.Hides(OverlayField.ErrorDetail) && !defaultSettings.Hides(OverlayField.MapName),
+        "fresh install uses the same layout and shortcuts as restoring defaults");
+    var persistedBeforeImport = File.ReadAllText(Path.Combine(temporary, "settings.json"));
+    foreach (string invalid in new[] { "{", "null", "{}", """{"unrelated":true}""", """{"Scale":"invalid"}""", """{"BroadcastPath":"relative.txt"}""" })
+    {
+        File.WriteAllText(exported, invalid);
+        bool importRejected = false;
+        try { Settings.Import(exported); }
+        catch (System.Text.Json.JsonException) { importRejected = true; }
+        Check(importRejected && File.ReadAllText(Path.Combine(temporary, "settings.json")) == persistedBeforeImport,
+            "invalid import is rejected without overwriting saved settings: " + invalid);
+    }
+
     var clock = new FakeTimeProvider();
     int port;
     using (var socket = new TcpListener(IPAddress.Loopback, 0))

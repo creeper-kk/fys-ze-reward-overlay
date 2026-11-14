@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -18,7 +19,7 @@ namespace FysZeRewardOverlay;
 
 public sealed class SettingsWindow : Window
 {
-    private readonly Settings initial;
+    private readonly RadioButton txtSource;
     private readonly RadioButton gsiSource;
     private readonly TextBox path = new();
     private readonly TextBlock pathStatus = OverlayWindow.Text("", 11, "#A1A1AA");
@@ -34,6 +35,7 @@ public sealed class SettingsWindow : Window
     private OverlayField textTarget;
     private bool loadingTextStyle;
     private readonly Dictionary<OverlayField, CheckBox> displayFields = new();
+    private readonly Dictionary<RewardValueAlignment, RadioButton> alignmentOptions = new();
     private readonly List<(RadioButton Button, ScrollViewer Page)> pages = new();
     private readonly StackPanel navigation = new();
     private readonly StackPanel sidebarFooter = new();
@@ -57,12 +59,14 @@ public sealed class SettingsWindow : Window
     private readonly TextBlock error = OverlayWindow.Text("", 12, "#FFC2BC");
     private readonly TextBlock saved = OverlayWindow.Text("", 12, "#A4ED86");
     private readonly OverlaySettingsPreview preview;
-    private readonly Func<Settings, string?> apply;
+    private readonly Func<Settings> currentSettings;
+    private readonly Func<Settings, bool, string?> apply;
+    private bool loadingSettings;
 
-    public SettingsWindow(Settings initial, Func<Settings, string?> apply, Action refresh, Action reset,
+    public SettingsWindow(Func<Settings> currentSettings, Func<Settings, bool, string?> apply, Action refresh, Action reset,
         Action? toggleMove = null, Action<int>? adjustStage = null)
     {
-        this.initial = initial;
+        this.currentSettings = currentSettings;
         this.apply = apply;
         Title = "ZE 奖励悬浮窗 · 设置";
         var resources = new Uri($"pack://application:,,,/{typeof(SettingsWindow).Assembly.GetName().Name};component/", UriKind.Absolute);
@@ -147,10 +151,8 @@ public sealed class SettingsWindow : Window
 
         var panel = AddPage("数据与文件", "\uE8A5");
         Label(panel, "地图来源");
-        var txtSource = CreateSourceRow(BroadcastFiles.DisplayName);
+        txtSource = CreateSourceRow(BroadcastFiles.DisplayName);
         gsiSource = CreateSourceRow("CS2 GSI");
-        txtSource.IsChecked = initial.MapSource == MapSource.Broadcast;
-        gsiSource.IsChecked = initial.MapSource == MapSource.Gsi;
         panel.Children.Add(gsiSource);
         var gsiPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 8) };
         gsiPanel.Children.Add(Button("保存 GSI 配置文件…", SaveGsiConfig, true));
@@ -173,7 +175,7 @@ public sealed class SettingsWindow : Window
         }
         panel.Children.Add(gsiPanel);
         panel.Children.Add(txtSource);
-        path.Text = initial.BroadcastPath; StyleTextBox(path);
+        StyleTextBox(path);
         path.ToolTip = "可手动填写完整路径或 %LOCALAPPDATA% 等环境变量，只读此文件。";
         path.TextChanged += (_, _) => UpdatePathStatus();
         panel.Children.Add(path);
@@ -189,18 +191,9 @@ public sealed class SettingsWindow : Window
         pathStatus.TextWrapping = TextWrapping.Wrap;
         pathStatus.Margin = new Thickness(0, 0, 0, 20);
         panel.Children.Add(pathStatus);
-        void UpdateMapSourceControls()
-        {
-            txtSource.Content = UsesGsi ? BroadcastFiles.DisplayName + "（可选关卡来源）" : BroadcastFiles.DisplayName;
-            if (!UsesGsi && string.IsNullOrWhiteSpace(path.Text)) path.Text = BroadcastFiles.DefaultPath;
-            UpdatePathStatus();
-        }
-        txtSource.Checked += (_, _) => { UpdateMapSourceControls(); UpdatePreview(); };
-        gsiSource.Checked += (_, _) => { UpdateMapSourceControls(); UpdatePreview(); };
-        UpdateMapSourceControls();
+        txtSource.Checked += (_, _) => OnMapSourceChanged();
+        gsiSource.Checked += (_, _) => OnMapSourceChanged();
         Label(panel, "数据更新频率");
-        pollSeconds.Text = (initial.PollIntervalMilliseconds / 1000d).ToString("0.###", CultureInfo.CurrentCulture);
-        rewardMinutes.Text = initial.RewardRefreshMinutes.ToString();
         AddNumber(panel, "地图 / 关卡读取", pollSeconds, "秒（0.2～60）");
         AddNumber(panel, "奖励联网更新", rewardMinutes, "分钟（1～1440）");
         Note(panel, "读取间隔越短，切图和关卡变化显示越快。奖励更新间隔控制联网查询频率；断网后每 30 秒重试。");
@@ -209,24 +202,23 @@ public sealed class SettingsWindow : Window
 
         panel = AddPage("外观与字体", "\uE8D2");
         Section(panel, "布局");
-        AddSlider(panel, "上下行间距", rowSpacing, initial.RowSpacing, "增加相邻显示行之间的距离", " px");
-        AddSlider(panel, "左右文字间距", columnSpacing, initial.ColumnSpacing, "相对默认间距的调整量，负值可拉近奖励名称和数字", " px");
+        AddSlider(panel, "上下行间距", rowSpacing, "增加相邻显示行之间的距离", " px");
+        AddSlider(panel, "左右文字间距", columnSpacing, "相对默认间距的调整量，负值可拉近奖励名称和数字", " px");
         Label(panel, "数值对齐");
-        valueAlignment = initial.ValueAlignment;
-        var alignmentOptions = new WrapPanel();
+        var alignmentRow = new WrapPanel();
         foreach (var (alignment, label) in new[]
         {
             (RewardValueAlignment.Left, "左对齐"), (RewardValueAlignment.Center, "居中"), (RewardValueAlignment.Right, "右对齐")
         })
         {
             var option = Option(label, "ValueAlignment");
-            option.IsChecked = valueAlignment == alignment;
             option.Checked += (_, _) => { valueAlignment = alignment; UpdatePreview(); };
-            alignmentOptions.Children.Add(option);
+            alignmentOptions.Add(alignment, option);
+            alignmentRow.Children.Add(option);
         }
-        panel.Children.Add(alignmentOptions);
-        AddSlider(panel, "背景不透明度", opacity, initial.BackgroundOpacity * 100, "0% 为全透明，文字保持清晰");
-        AddSlider(panel, "整体缩放", scale, initial.Scale * 100, "缩放悬浮窗和所有文字");
+        panel.Children.Add(alignmentRow);
+        AddSlider(panel, "背景不透明度", opacity, "0% 为全透明，文字保持清晰");
+        AddSlider(panel, "整体缩放", scale, "缩放悬浮窗和所有文字");
         var positionActions = new WrapPanel { Margin = new Thickness(0, 2, 0, 12) };
         if (toggleMove is not null) positionActions.Children.Add(Button("拖动 / 锁定悬浮窗", toggleMove, false));
         positionActions.Children.Add(Button("恢复悬浮窗位置", reset, false));
@@ -235,7 +227,7 @@ public sealed class SettingsWindow : Window
         fonts.ItemsSource = FontCatalog.Installed;
         fonts.ItemTemplate = (DataTemplate)FindResource("FontOptionLabel");
         TextSearch.SetTextPath(fonts, nameof(FontOption.DisplayName));
-        fonts.SelectedValuePath = nameof(FontOption.Name); fonts.SelectedValue = FontCatalog.Resolve(initial.OverlayFontFamily).Source;
+        fonts.SelectedValuePath = nameof(FontOption.Name);
         fonts.Padding = new Thickness(8, 6, 8, 6); fonts.FontSize = 14;
         fonts.MaxDropDownHeight = 300; fonts.IsTextSearchEnabled = true;
         panel.Children.Add(fonts);
@@ -246,7 +238,7 @@ public sealed class SettingsWindow : Window
         var visibilityStyle = (Style)FindResource("VisibilitySwitch");
         foreach (var (field, label) in OverlayOptions.Fields)
         {
-            var check = new CheckBox { Content = label, IsChecked = !initial.Hides(field), Style = visibilityStyle };
+            var check = new CheckBox { Content = label, Style = visibilityStyle };
             displayFields.Add(field, check);
             panel.Children.Add(check);
         }
@@ -264,14 +256,13 @@ public sealed class SettingsWindow : Window
         var tip = OverlayWindow.Text("点击输入框后，直接按下新的组合键。", 11, "#A1A1AA");
         tip.Margin = new Thickness(0, 0, 0, 9); panel.Children.Add(tip);
         string[] labels = { "显示 / 隐藏", "拖动 / 锁定", "打开设置", "提高推断关卡", "降低推断关卡" };
-        var current = initial.Hotkeys;
         for (int i = 0; i < shortcuts.Length; i++)
         {
             var row = new Grid { Margin = new Thickness(0, 0, 0, 9) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
             row.ColumnDefinitions.Add(new ColumnDefinition());
             row.Children.Add(OverlayWindow.Text(labels[i], 13, "#DEDEE4"));
-            var box = new TextBox { Text = current[i], IsReadOnly = true, ToolTip = labels[i] + "快捷键" };
+            var box = new TextBox { IsReadOnly = true, ToolTip = labels[i] + "快捷键" };
             AutomationProperties.SetName(box, labels[i] + "快捷键");
             StyleTextBox(box);
             box.PreviewKeyDown += (_, e) =>
@@ -288,6 +279,7 @@ public sealed class SettingsWindow : Window
         shortcutNote.TextWrapping = TextWrapping.Wrap;
         shortcutNote.Margin = new Thickness(0, 1, 0, 15); panel.Children.Add(shortcutNote);
         Note(panel, "快捷键对整个桌面生效。系统托盘始终提供显示、拖动、设置及选择文件的入口。");
+        AddConfigurationPage();
         gsiStatus.Margin = new Thickness(11, 0, 0, 8);
         sidebarFooter.Children.Add(gsiStatus);
         AutomationProperties.SetLiveSetting(gsiStatus, AutomationLiveSetting.Polite);
@@ -303,8 +295,62 @@ public sealed class SettingsWindow : Window
             check.Unchecked += (_, _) => UpdatePreview();
         }
         KeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
+        var initial = currentSettings();
+        LoadEditor(initial);
         SelectPage(initial.MapSource == MapSource.Broadcast && BroadcastReader.Read(initial.BroadcastPath).FileUnavailable ? 0 : 1);
-        UpdatePreview();
+    }
+
+    private void AddConfigurationPage()
+    {
+        var panel = AddPage("配置管理", "\uE8B7");
+        AddActionRow(panel, "导入配置", "从 JSON 文件载入配置并立即应用，覆盖现有设置。", Button("导入…", ImportSettings, false));
+        AddActionRow(panel, "导出配置", "将当前已保存的设置备份为 JSON 文件。", Button("导出…", ExportSettings, false));
+        Section(panel, "操作");
+        var reset = Button("恢复为默认", RestoreDefaults, false);
+        reset.Foreground = reset.BorderBrush = OverlayWindow.Brush("#FF5377");
+        reset.Background = Brushes.Transparent;
+        AddActionRow(panel, "恢复为默认", "将悬浮窗的全部设置恢复为默认配置。", reset);
+    }
+
+    private static void AddActionRow(Panel panel, string name, string description, Button button)
+    {
+        var row = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
+        button.Margin = new Thickness(14, 0, 0, 0);
+        button.VerticalAlignment = VerticalAlignment.Center;
+        DockPanel.SetDock(button, Dock.Right);
+        row.Children.Add(button);
+        var copy = new StackPanel();
+        Label(copy, name).Margin = new Thickness(0, 0, 0, 4);
+        var note = OverlayWindow.Text(description, 11, "#A1A1AA");
+        note.TextWrapping = TextWrapping.Wrap;
+        copy.Children.Add(note);
+        row.Children.Add(copy);
+        panel.Children.Add(row);
+    }
+
+    private void LoadEditor(Settings next)
+    {
+        loadingSettings = true;
+        txtSource.IsChecked = next.MapSource == MapSource.Broadcast;
+        gsiSource.IsChecked = next.MapSource == MapSource.Gsi;
+        path.Text = next.BroadcastPath;
+        pollSeconds.Text = (next.PollIntervalMilliseconds / 1000d).ToString("0.###", CultureInfo.CurrentCulture);
+        rewardMinutes.Text = next.RewardRefreshMinutes.ToString(CultureInfo.CurrentCulture);
+        var hotkeys = next.Hotkeys;
+        for (int i = 0; i < shortcuts.Length; i++) shortcuts[i].Text = hotkeys[i];
+        opacity.Value = next.BackgroundOpacity * 100;
+        scale.Value = next.Scale * 100;
+        rowSpacing.Value = next.RowSpacing;
+        columnSpacing.Value = next.ColumnSpacing;
+        foreach (var (alignment, option) in alignmentOptions) option.IsChecked = alignment == next.ValueAlignment;
+        fonts.SelectedValue = FontCatalog.Resolve(next.OverlayFontFamily).Source;
+        foreach (var (field, check) in displayFields) check.IsChecked = !next.Hides(field);
+        styleDrafts.Clear();
+        foreach (var (field, style) in next.FieldTextStyles) styleDrafts[field] = TextStyleDraft.FromStyle(style);
+        styleDrafts[OverlayField.None] = TextStyleDraft.FromStyle(next.GlobalTextStyle);
+        SelectTextTarget(textTarget);
+        loadingSettings = false;
+        OnMapSourceChanged();
     }
 
     private void AddAboutPage()
@@ -424,8 +470,6 @@ public sealed class SettingsWindow : Window
         foreach (var entry in OverlayTypography.Labels) AddTarget(entry.Key, entry.Value);
         panel.Children.Add(targets);
 
-        foreach (var entry in initial.FieldTextStyles) styleDrafts[entry.Key] = TextStyleDraft.FromStyle(entry.Value);
-        styleDrafts[OverlayField.None] = TextStyleDraft.FromStyle(initial.GlobalTextStyle);
         Note(panel, "单项未设置的属性沿用全局。全局未设置时使用默认样式。");
 
         Label(panel, "字号  8–64");
@@ -511,8 +555,6 @@ public sealed class SettingsWindow : Window
             StoreTextDraft();
         };
         textColor.TextChanged += (_, _) => StoreTextDraft();
-        SelectTextTarget(OverlayField.None);
-
         void AddTarget(OverlayField field, string name)
         {
             var button = Option(name, "TextTarget");
@@ -564,7 +606,7 @@ public sealed class SettingsWindow : Window
 
     private void UpdatePreview()
     {
-        if (shortcuts[^1] is null) return;
+        if (loadingSettings) return;
         saved.Text = "";
         var draft = ReadAppearance();
         foreach (var (field, textDraft) in styleDrafts)
@@ -714,6 +756,7 @@ public sealed class SettingsWindow : Window
     }
     private void UpdatePathStatus()
     {
+        if (loadingSettings) return;
         if (UsesGsi && string.IsNullOrWhiteSpace(path.Text)) { pathStatus.Text = "路径留空时按 CT 比分推断关卡。"; return; }
         if (!BroadcastFiles.TryNormalize(path.Text, out var normalized)) { pathStatus.Text = "请填写叠层文本的完整路径，或点击“选择文件”。"; return; }
         var broadcast = BroadcastReader.Read(normalized);
@@ -721,6 +764,72 @@ public sealed class SettingsWindow : Window
     }
 
     private bool UsesGsi => gsiSource.IsChecked == true;
+
+    private void OnMapSourceChanged()
+    {
+        if (loadingSettings) return;
+        txtSource.Content = UsesGsi ? BroadcastFiles.DisplayName + "（可选关卡来源）" : BroadcastFiles.DisplayName;
+        if (!UsesGsi && string.IsNullOrWhiteSpace(path.Text)) path.Text = BroadcastFiles.DefaultPath;
+        UpdatePathStatus();
+        UpdatePreview();
+    }
+
+    private const string ConfigurationFilter = "悬浮窗配置 (*.json)|*.json";
+
+    private void ImportSettings()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "导入悬浮窗配置", Filter = ConfigurationFilter, CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            ApplyConfiguration(Settings.Import(dialog.FileName), "配置已导入并应用");
+        }
+        catch (JsonException)
+        {
+            SetError("导入失败。请选择有效的悬浮窗 JSON 配置文件，并检查配置中的叠层文本路径。");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetError("配置读取失败：" + ex.Message);
+        }
+    }
+
+    private void ExportSettings()
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出悬浮窗配置", FileName = "FysZeRewardOverlay.settings.json",
+            Filter = ConfigurationFilter, DefaultExt = ".json", OverwritePrompt = true
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            currentSettings().Export(dialog.FileName);
+            SetSuccess("配置已导出");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetError("配置导出失败：" + ex.Message);
+        }
+    }
+
+    private void RestoreDefaults()
+    {
+        var choice = MessageBox.Show(this, "恢复为默认会覆盖已保存的悬浮窗设置，并丢弃未保存的修改。确定继续吗？",
+            "恢复为默认", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (choice == MessageBoxResult.Yes) ApplyConfiguration(Settings.CreateDefault(), "已恢复为默认配置");
+    }
+
+    private void ApplyConfiguration(Settings next, string success)
+    {
+        var message = apply(next, false);
+        if (message is not null) { SetError(message); return; }
+        LoadEditor(next);
+        SetSuccess(success);
+    }
 
     private void SaveGsiConfig()
     {
@@ -765,14 +874,14 @@ public sealed class SettingsWindow : Window
         return button;
     }
 
-    private static void AddSlider(Panel panel, string label, Slider slider, double value, string description, string unit = "%")
+    private static void AddSlider(Panel panel, string label, Slider slider, string description, string unit = "%")
     {
         var header = new DockPanel { Margin = new Thickness(0, 9, 0, 6) };
         var amount = OverlayWindow.Text("", 13, "#E6E6EB", true);
         DockPanel.SetDock(amount, Dock.Right); header.Children.Add(amount);
         header.Children.Add(OverlayWindow.Text(label, 13, "#DEDEE4")); panel.Children.Add(header);
         slider.ValueChanged += (_, _) => amount.Text = Math.Round(slider.Value) + unit;
-        slider.Value = value; amount.Text = Math.Round(slider.Value) + unit;
+        amount.Text = Math.Round(slider.Value) + unit;
         slider.ToolTip = label; panel.Children.Add(slider);
         AutomationProperties.SetName(slider, label);
         var note = OverlayWindow.Text(description, 10, "#A1A1AA");
@@ -791,17 +900,13 @@ public sealed class SettingsWindow : Window
         next.BroadcastPath = selectedPath;
         next.PollIntervalMilliseconds = milliseconds;
         next.RewardRefreshMinutes = minutes;
-        var message = apply(next);
+        var message = apply(next, true);
         if (message is not null) SetError(message);
-        else
-        {
-            error.Text = "";
-            saved.Text = "设置已保存";
-        }
+        else SetSuccess("设置已保存");
     }
     private Settings ReadAppearance()
     {
-        var draft = initial.Copy();
+        var draft = currentSettings().Copy();
         draft.MapSource = UsesGsi ? MapSource.Gsi : MapSource.Broadcast;
         draft.ToggleHotkey = shortcuts[0].Text;
         draft.MoveHotkey = shortcuts[1].Text;
@@ -823,6 +928,11 @@ public sealed class SettingsWindow : Window
     {
         saved.Text = "";
         error.Text = value;
+    }
+    private void SetSuccess(string value)
+    {
+        error.Text = "";
+        saved.Text = value;
     }
     internal void SelectPreviewTab(int index) => SelectPage(index);
 }

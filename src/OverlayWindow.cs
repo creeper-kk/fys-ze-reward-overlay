@@ -325,7 +325,7 @@ public sealed class OverlayWindow : Window
             settingsWindow.Activate();
             return;
         }
-        settingsWindow = new SettingsWindow(settings.Copy(), ApplySettings, RefreshRewards, ResetPosition, ToggleLock, AdjustStageOffset);
+        settingsWindow = new SettingsWindow(() => settings, ApplySettings, RefreshRewards, ResetPosition, ToggleLock, AdjustStageOffset);
         settingsWindow.Closed += (_, _) =>
         {
             gsiStatusTimer.Stop();
@@ -341,16 +341,26 @@ public sealed class OverlayWindow : Window
             settingsWindow.UpdateInferredStage(broadcast, stageOffset);
         }
     }
-    private string? ApplySettings(Settings next)
+    private string? ApplySettings(Settings next, bool keepPositionAndLock = true)
     {
         if (hotkeys is null) return "快捷键尚未初始化";
         if (!hotkeys.Apply(next.Hotkeys, next.ActiveHotkeyCount, out var error)) return error;
-        next.Left = settings.Left; next.Top = settings.Top; next.Locked = settings.Locked;
+        if (keepPositionAndLock)
+        {
+            next.Left = settings.Left;
+            next.Top = settings.Top;
+            next.Locked = settings.Locked;
+        }
         try { next.Save(directory); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             hotkeys.Apply(settings.Hotkeys, settings.ActiveHotkeyCount, out _);
             return "设置保存失败：" + ex.Message;
+        }
+        if (dragStart is not null)
+        {
+            dragStart = null;
+            ReleaseMouseCapture();
         }
         if (settings.MapSource != next.MapSource) lastDisplay = null;
         settings = next;
@@ -394,12 +404,12 @@ public sealed class OverlayWindow : Window
         SaveVisual(card.Element, Path.Combine(output, "reward-preview.png"), new Size(double.PositiveInfinity, double.PositiveInfinity));
         Render(DisplayInfo.Resolve(BroadcastReader.Parse("地图: fys_lobby_liyue"), null));
         SaveVisual(card.Element, Path.Combine(output, "unavailable-preview.png"), new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var settingsPreview = new SettingsWindow(settings.Copy(), _ => null, () => { }, () => { }, () => { }, _ => { });
+        var settingsPreview = new SettingsWindow(() => settings, (_, _) => null, () => { }, () => { }, () => { }, _ => { });
         var layout = (FrameworkElement)settingsPreview.Content;
         var settingsSize = new Size(1180, 750);
         layout.Width = settingsSize.Width;
         layout.Height = settingsSize.Height;
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < 6; i++)
         {
             settingsPreview.SelectPreviewTab(i);
             SaveVisual(layout, Path.Combine(output, "settings-tab-" + i + ".png"), settingsSize);
