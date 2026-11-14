@@ -12,10 +12,10 @@ using System.Threading.Tasks;
 
 namespace FysZeRewardOverlay;
 
-public record Broadcast(string Map, string Title, int? Stage, string StageText, string Error)
+public record Broadcast(string Map, string Title, int? Stage, string StageText, string Error, bool FileUnavailable = false)
 {
     public bool IsZe => Regex.IsMatch(Map, @"^ze_[a-z0-9_-]{1,120}$", RegexOptions.IgnoreCase);
-    public string Identity => Map + "|" + Title + "|" + Stage + "|" + StageText + "|" + Error;
+    public string Identity => Map + "|" + Title + "|" + Stage + "|" + StageText + "|" + Error + "|" + FileUnavailable;
 }
 
 public static class BroadcastReader
@@ -25,19 +25,19 @@ public static class BroadcastReader
         try
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (stream.Length > 65536) return Invalid("实时文件内容过长");
+            if (stream.Length > 65536) return Invalid("实时文件内容过长", true);
             using var reader = new StreamReader(stream, new UTF8Encoding(false, true), true);
             return Parse(reader.ReadToEnd());
         }
-        catch (FileNotFoundException) { return Invalid("实时文件尚未生成"); }
-        catch (DirectoryNotFoundException) { return Invalid("实时文件路径不存在"); }
-        catch (IOException) { return Invalid("实时文件暂时无法读取"); }
-        catch (UnauthorizedAccessException) { return Invalid("没有实时文件的读取权限"); }
-        catch (DecoderFallbackException) { return Invalid("无法识别实时文件编码"); }
-        catch (ArgumentException) { return Invalid("实时文件路径无效"); }
+        catch (FileNotFoundException) { return Invalid("实时文件尚未生成", true); }
+        catch (DirectoryNotFoundException) { return Invalid("实时文件路径不存在", true); }
+        catch (IOException) { return Invalid("实时文件暂时无法读取", true); }
+        catch (UnauthorizedAccessException) { return Invalid("没有实时文件的读取权限", true); }
+        catch (DecoderFallbackException) { return Invalid("无法识别实时文件编码", true); }
+        catch (ArgumentException) { return Invalid("实时文件路径无效", true); }
     }
 
-    public static Broadcast Invalid(string reason) => new("", "", null, "", reason);
+    public static Broadcast Invalid(string reason, bool fileUnavailable = false) => new("", "", null, "", reason, fileUnavailable);
     public static Broadcast Parse(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return Invalid("等待实时文件更新");
@@ -120,10 +120,22 @@ public sealed class RewardRepository : IDisposable
 {
     private readonly HttpClient http;
     private readonly string cacheDirectory;
+    private readonly TimeProvider clock;
+    private TimeSpan refreshInterval = TimeSpan.FromMinutes(10);
+    public TimeSpan RefreshInterval
+    {
+        get => refreshInterval;
+        set
+        {
+            if (value < TimeSpan.FromMinutes(1) || value > TimeSpan.FromDays(1)) throw new ArgumentOutOfRangeException(nameof(value));
+            refreshInterval = value;
+        }
+    }
     private readonly Dictionary<string, (RewardData Data, DateTimeOffset RetryAt)> memory = new(StringComparer.OrdinalIgnoreCase);
-    public RewardRepository(string cacheDirectory, HttpClient? http = null)
+    public RewardRepository(string cacheDirectory, HttpClient? http = null, TimeProvider? clock = null)
     {
         this.cacheDirectory = cacheDirectory;
+        this.clock = clock ?? TimeProvider.System;
         this.http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
         this.http.DefaultRequestHeaders.UserAgent.ParseAdd("FysZeRewardOverlay/1.0");
     }
@@ -131,8 +143,13 @@ public sealed class RewardRepository : IDisposable
     public async Task<RewardData> GetAsync(string map)
     {
         if (!Regex.IsMatch(map, @"^ze_[a-z0-9_-]{1,120}$")) return new(null, null, false, "地图名称无效");
-        var now = DateTimeOffset.UtcNow;
-        if (memory.TryGetValue(map, out var existing) && existing.RetryAt > now) return existing.Data;
+        var now = clock.GetUtcNow();
+        if (memory.TryGetValue(map, out var existing))
+        {
+            var expires = existing.Data.Rewards is not null && !existing.Data.Offline && existing.Data.FetchedAt.HasValue
+                ? existing.Data.FetchedAt.Value + RefreshInterval : existing.RetryAt;
+            if (expires > now) return existing.Data;
+        }
         var path = Path.Combine(cacheDirectory, map + ".json");
         RewardData result;
         try
@@ -164,13 +181,13 @@ public sealed class RewardRepository : IDisposable
                 if (File.Exists(path))
                 {
                     var cache = JsonSerializer.Deserialize<CacheEnvelope>(File.ReadAllText(path));
-                    if (cache?.Map == map && cache.FetchedAt <= DateTimeOffset.UtcNow.AddMinutes(5))
+                    if (cache?.Map == map && cache.FetchedAt <= clock.GetUtcNow().AddMinutes(5))
                         result = new(RewardParser.Parse(cache.Body), cache.FetchedAt, true, "");
                 }
             }
             catch (Exception cacheError) when (cacheError is IOException or UnauthorizedAccessException or JsonException or FormatException or InvalidOperationException or ArgumentException) { }
         }
-        memory[map] = (result, now.Add(result.Rewards is not null && !result.Offline ? TimeSpan.FromMinutes(10) : TimeSpan.FromSeconds(30)));
+        memory[map] = (result, clock.GetUtcNow().AddSeconds(30));
         return result;
     }
     public void Dispose() => http.Dispose();

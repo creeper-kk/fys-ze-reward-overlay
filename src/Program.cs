@@ -25,6 +25,7 @@ internal static class Program
         {
             var broadcast = BroadcastReader.Read(settings.BroadcastPath);
             using var rewards = new RewardRepository(Path.Combine(directory, "cache"));
+            rewards.RefreshInterval = TimeSpan.FromMinutes(settings.RewardRefreshMinutes);
             var result = DisplayInfo.Resolve(broadcast, broadcast.IsZe && broadcast.Stage.HasValue ? rewards.GetAsync(broadcast.Map).GetAwaiter().GetResult() : null);
             Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
             return result.Available ? 0 : 2;
@@ -45,7 +46,7 @@ internal static class Program
                 e.Handled = true;
                 app.Shutdown(1);
             };
-            var overlay = new OverlayWindow(settings, directory, args.Contains("--demo"));
+            var overlay = new OverlayWindow(settings, directory, args.Contains("--demo"), !args.Contains("--smoke-report") && !args.Contains("--render-preview"));
             app.MainWindow = overlay;
             if (Option("--render-preview") is string preview)
             {

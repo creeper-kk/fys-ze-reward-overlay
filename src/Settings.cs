@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Windows.Input;
 using System.Windows.Interop;
 
@@ -11,12 +12,17 @@ namespace FysZeRewardOverlay;
 
 public sealed class Settings
 {
-    public string BroadcastPath { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "fys", "fys.broadcast.assistant.txt");
+    public string BroadcastPath { get; set; } = BroadcastFiles.DefaultPath;
     public string ToggleHotkey { get; set; } = "Ctrl+Shift+F8";
     public string MoveHotkey { get; set; } = "Ctrl+Shift+F9";
     public string SettingsHotkey { get; set; } = "Ctrl+Shift+F10";
     public double BackgroundOpacity { get; set; } = 0.55;
     public double Scale { get; set; } = 1;
+    public int PollIntervalMilliseconds { get; set; } = 600;
+    public int RewardRefreshMinutes { get; set; } = 10;
+    public string OverlayFontFamily { get; set; } = FontCatalog.DefaultName;
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public OverlayField HiddenFields { get; set; } = OverlayField.None;
     public double? Left { get; set; }
     public double? Top { get; set; }
     public bool Locked { get; set; } = true;
@@ -30,6 +36,10 @@ public sealed class Settings
             if (s.Left.HasValue && !double.IsFinite(s.Left.Value)) s.Left = null;
             if (s.Top.HasValue && !double.IsFinite(s.Top.Value)) s.Top = null;
             if (string.IsNullOrWhiteSpace(s.BroadcastPath)) s.BroadcastPath = new Settings().BroadcastPath;
+            s.PollIntervalMilliseconds = Math.Clamp(s.PollIntervalMilliseconds, 200, 60000);
+            s.RewardRefreshMinutes = Math.Clamp(s.RewardRefreshMinutes, 1, 1440);
+            if (string.IsNullOrWhiteSpace(s.OverlayFontFamily)) s.OverlayFontFamily = FontCatalog.DefaultName;
+            s.HiddenFields &= OverlayField.All;
             return s;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { return new(); }
@@ -40,7 +50,9 @@ public sealed class Settings
         AtomicFile.Write(Path.Combine(directory, "settings.json"), JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
     }
     public Settings Copy() => (Settings)MemberwiseClone();
+    [JsonIgnore]
     public string[] Hotkeys => new[] { ToggleHotkey, MoveHotkey, SettingsHotkey };
+    public bool Hides(OverlayField field) => (HiddenFields & field) != 0;
 }
 
 public readonly record struct Shortcut(uint Modifiers, uint VirtualKey)

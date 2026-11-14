@@ -17,6 +17,7 @@ public sealed class OverlayWindow : Window
     private Settings settings;
     private readonly string directory;
     private readonly bool demo;
+    private readonly bool interactiveSetup;
     private readonly RewardRepository rewards;
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private HotkeyManager? hotkeys;
@@ -33,6 +34,10 @@ public sealed class OverlayWindow : Window
     private readonly TextBlock source = Text("", 10, "#ADB8C8");
     private readonly TextBlock hint = Text("", 10, "#98A6B7");
     private readonly TextBlock[] values = new TextBlock[4];
+    private readonly FrameworkElement[] fieldRows = new FrameworkElement[4];
+    private readonly DockPanel top = new() { Margin = new Thickness(0, 0, 0, 12) };
+    private readonly StackPanel footer = new() { Margin = new Thickness(0, 7, 0, 0) };
+    private Button? selectFileButton;
     private readonly StackPanel rewardRows = new();
     private readonly StackPanel unavailablePanel = new();
     private readonly StackPanel editButtons = new() { Orientation = Orientation.Horizontal };
@@ -41,13 +46,17 @@ public sealed class OverlayWindow : Window
     private string identity = "";
     private int generation;
     private DisplayInfo? lastDisplay;
+    private bool inputUnavailable;
+    private string notifiedMissingPath = "";
 
-    public OverlayWindow(Settings settings, string directory, bool demo)
+    public OverlayWindow(Settings settings, string directory, bool demo, bool interactiveSetup = true)
     {
         this.settings = settings;
         this.directory = directory;
         this.demo = demo;
+        this.interactiveSetup = interactiveSetup;
         rewards = new RewardRepository(Path.Combine(directory, "cache"));
+        ApplyUpdateIntervals();
         Title = demo ? "ZE 奖励悬浮窗 · 演示" : "ZE 奖励悬浮窗";
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
@@ -73,6 +82,7 @@ public sealed class OverlayWindow : Window
             PlaceWindow();
             Tick();
             timer.Start();
+            if (!demo && interactiveSetup && inputUnavailable) OpenSettings();
         };
         timer.Tick += (_, _) => Tick();
         Closing += (_, e) => { if (!quitting) { e.Cancel = true; Hide(); } };
@@ -104,7 +114,6 @@ public sealed class OverlayWindow : Window
         card.Margin = new Thickness(2);
         Content = card;
 
-        var top = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
         var settingsButton = SmallButton("设置", OpenSettings);
         var lockButton = SmallButton("锁定", ToggleLock);
         editButtons.Children.Add(settingsButton);
@@ -127,9 +136,9 @@ public sealed class OverlayWindow : Window
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.Children.Add(Text(labels[i], 13, "#C7D0DB"));
             values[i] = Text("—", i % 2 == 0 ? 23 : 18, i < 2 ? "#B4E8FF" : "#F4D799", true);
-            values[i].FontFamily = new FontFamily("Segoe UI");
             Grid.SetColumn(values[i], 1);
             row.Children.Add(values[i]);
+            fieldRows[i] = row;
             rewardRows.Children.Add(row);
         }
         content.Children.Add(rewardRows);
@@ -138,8 +147,11 @@ public sealed class OverlayWindow : Window
         reason.TextWrapping = TextWrapping.Wrap;
         reason.Margin = new Thickness(0, 0, 0, 10);
         unavailablePanel.Children.Add(reason);
+        selectFileButton = SmallButton("选择广播文件…", SelectBroadcastFile);
+        selectFileButton.Margin = new Thickness(0, 0, 0, 8);
+        selectFileButton.HorizontalAlignment = HorizontalAlignment.Left;
+        unavailablePanel.Children.Add(selectFileButton);
         content.Children.Add(unavailablePanel);
-        var footer = new StackPanel { Margin = new Thickness(0, 7, 0, 0) };
         footer.Children.Add(new Border { Height = 1, Background = Brush("#324354"), Margin = new Thickness(0, 0, 0, 8) });
         footer.Children.Add(source);
         hint.Margin = new Thickness(0, 5, 0, 0);
@@ -164,6 +176,13 @@ public sealed class OverlayWindow : Window
             return;
         }
         var broadcast = BroadcastReader.Read(settings.BroadcastPath);
+        inputUnavailable = broadcast.FileUnavailable;
+        if (inputUnavailable && interactiveSetup && notifiedMissingPath != settings.BroadcastPath)
+        {
+            notifiedMissingPath = settings.BroadcastPath;
+            tray?.ShowBalloonTip(5000, "请选择广播文件", "当前无法读取实时文件。右键托盘 → 选择广播文件，或按 " + settings.SettingsHotkey + " 打开设置。", Forms.ToolTipIcon.Info);
+        }
+        else if (!inputUnavailable) notifiedMissingPath = "";
         if (identity != broadcast.Identity)
         {
             identity = broadcast.Identity;
@@ -194,9 +213,7 @@ public sealed class OverlayWindow : Window
         title.Text = info.Available ? (string.IsNullOrWhiteSpace(info.Title) ? info.Map : info.Title) : "地图信息";
         title.ToolTip = title.Text;
         map.Text = info.Map;
-        map.Visibility = string.IsNullOrWhiteSpace(info.Map) ? Visibility.Collapsed : Visibility.Visible;
         stage.Text = info.Available ? "第 " + info.Stage + " 关" : "";
-        stage.Visibility = info.Available ? Visibility.Visible : Visibility.Collapsed;
         rewardRows.Visibility = info.Available ? Visibility.Visible : Visibility.Collapsed;
         unavailablePanel.Visibility = info.Available ? Visibility.Collapsed : Visibility.Visible;
         if (info.Reward is { } reward)
@@ -206,10 +223,46 @@ public sealed class OverlayWindow : Window
             values[2].Text = reward.EconPasses.ToString();
             values[3].Text = DisplayInfo.Ratio(reward.EconDamage);
         }
-        reason.Text = info.Detail;
+        reason.Text = info.Detail + (inputUnavailable ? "\n可从系统托盘选择广播文件，或按 " + settings.SettingsHotkey + " 打开设置。" : "");
         source.Text = info.Available ? info.Source : "等待有效的 ZE 地图与关卡";
         source.Foreground = Brush(info.Source.StartsWith("离线") ? "#F4D799" : "#ADB8C8");
         source.ToolTip = info.Detail;
+        ApplyInformationVisibility();
+    }
+
+    private void ApplyInformationVisibility()
+    {
+        static Visibility Show(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
+        var info = lastDisplay;
+        top.Visibility = Show(!settings.Hides(OverlayField.Heading) || !settings.Locked);
+        title.Visibility = Show(!settings.Hides(OverlayField.MapTitle));
+        map.Visibility = Show(!settings.Hides(OverlayField.MapName) && !string.IsNullOrWhiteSpace(info?.Map));
+        stage.Visibility = Show(info?.Available == true && !settings.Hides(OverlayField.Stage));
+        OverlayField[] rows = { OverlayField.RankPasses, OverlayField.RankDamage, OverlayField.EconPasses, OverlayField.EconDamage };
+        for (int i = 0; i < rows.Length; i++) fieldRows[i].Visibility = Show(!settings.Hides(rows[i]));
+        reason.Visibility = Show(!settings.Hides(OverlayField.ErrorDetail));
+        source.Visibility = Show(!settings.Hides(OverlayField.Source));
+        hint.Visibility = Show(!settings.Hides(OverlayField.HotkeyHint) || !settings.Locked);
+        footer.Visibility = Show(source.Visibility == Visibility.Visible || hint.Visibility == Visibility.Visible);
+        if (selectFileButton is not null) selectFileButton.Visibility = Show(inputUnavailable && !settings.Locked);
+        // With every normal field hidden, keep the window invisible until edit mode or an error.
+        var normalFields = OverlayField.All & ~OverlayField.ErrorDetail;
+        card.Opacity = info?.Available == true && settings.Locked && (settings.HiddenFields & normalFields) == normalFields ? 0 : 1;
+    }
+
+    private void ApplyUpdateIntervals()
+    {
+        timer.Interval = TimeSpan.FromMilliseconds(settings.PollIntervalMilliseconds);
+        rewards.RefreshInterval = TimeSpan.FromMinutes(settings.RewardRefreshMinutes);
+    }
+
+    public void SelectBroadcastFile()
+    {
+        var selected = BroadcastFiles.Select(this, settings.BroadcastPath);
+        if (selected is null) return;
+        var next = settings.Copy(); next.BroadcastPath = selected;
+        var error = ApplySettings(next);
+        if (error is not null) MessageBox.Show(error, "无法切换广播文件");
     }
 
     private void CreateTray()
@@ -219,6 +272,7 @@ public sealed class OverlayWindow : Window
         menu.Items.Add("显示 / 隐藏", null, (_, _) => Dispatcher.Invoke(ToggleVisibility));
         menu.Items.Add("切换拖动 / 锁定", null, (_, _) => Dispatcher.Invoke(ToggleLock));
         menu.Items.Add("设置…", null, (_, _) => Dispatcher.Invoke(OpenSettings));
+        menu.Items.Add("选择广播文件…", null, (_, _) => Dispatcher.Invoke(SelectBroadcastFile));
         menu.Items.Add("立即更新奖励", null, (_, _) => Dispatcher.Invoke(RefreshRewards));
         menu.Items.Add("恢复悬浮窗位置", null, (_, _) => Dispatcher.Invoke(ResetPosition));
         menu.Items.Add(new Forms.ToolStripSeparator());
@@ -243,6 +297,7 @@ public sealed class OverlayWindow : Window
     }
     private void ApplyAppearance()
     {
+        FontFamily = FontCatalog.Resolve(settings.OverlayFontFamily);
         double backgroundOpacity = settings.Locked ? settings.BackgroundOpacity : Math.Max(0.15, settings.BackgroundOpacity);
         card.Background = new SolidColorBrush(Color.FromArgb((byte)Math.Round(backgroundOpacity * 255), 13, 20, 28));
         card.BorderBrush = settings.Locked ? Brushes.Transparent : Brush("#A4ED86");
@@ -250,6 +305,7 @@ public sealed class OverlayWindow : Window
         editButtons.Visibility = settings.Locked ? Visibility.Collapsed : Visibility.Visible;
         heading.Text = settings.Locked ? "ZE  /  通关奖励" : "ZE  /  拖动模式";
         hint.Text = settings.Locked ? settings.ToggleHotkey + " 显隐   ·   " + settings.MoveHotkey + " 拖动" : "拖动空白区域移动 · Esc 锁定 · 右键设置";
+        ApplyInformationVisibility();
         var handle = new WindowInteropHelper(this).Handle;
         if (handle != IntPtr.Zero) Native.SetClickThrough(handle, settings.Locked);
     }
@@ -285,6 +341,7 @@ public sealed class OverlayWindow : Window
         }
         settings = next;
         identity = ""; generation++;
+        ApplyUpdateIntervals();
         ApplyAppearance(); UpdateLayout(); PlaceWindow(); Tick();
         return null;
     }
@@ -323,7 +380,11 @@ public sealed class OverlayWindow : Window
         Render(DisplayInfo.Resolve(BroadcastReader.Parse("地图: fys_lobby_liyue"), null));
         SaveVisual(card, Path.Combine(output, "unavailable-preview.png"), new Size(double.PositiveInfinity, double.PositiveInfinity));
         var settingsPreview = new SettingsWindow(settings.Copy(), directory, _ => null, () => { }, () => { });
-        SaveVisual((FrameworkElement)settingsPreview.Content, Path.Combine(output, "settings-preview.png"), new Size(538, 640));
+        for (int i = 0; i < 4; i++)
+        {
+            settingsPreview.SelectPreviewTab(i);
+            SaveVisual((FrameworkElement)settingsPreview.Content, Path.Combine(output, "settings-tab-" + i + ".png"), new Size(588, 650));
+        }
         rewards.Dispose();
     }
 
@@ -337,6 +398,7 @@ public sealed class OverlayWindow : Window
         bool locked = (lockedStyles & 0x20) != 0 && (lockedStyles & 0x08000000) != 0;
         ToggleLock();
         bool unlocked = (Native.GetWindowLong(handle, -20) & 0x20) == 0;
+        bool missingFileAction = !inputUnavailable || selectFileButton?.Visibility == Visibility.Visible;
         ToggleVisibility(); bool hidden = !IsVisible;
         ToggleVisibility(); bool shown = IsVisible;
         var startLeft = Left; var startTop = Top;
@@ -346,7 +408,21 @@ public sealed class OverlayWindow : Window
         bool moved = Math.Abs(persisted.Left!.Value - Left) < 1 && Math.Abs(persisted.Top!.Value - Top) < 1;
         Left = startLeft; Top = startTop; settings.Left = Left; settings.Top = Top;
         if (initialLock) ToggleLock();
-        var report = new { HotkeysRegistered = hotkeys?.RegisteredCount, LockedClickThrough = locked, UnlockedMouse = unlocked, HideWorks = hidden, ShowWorks = shown, PositionPersists = moved, Display = lastDisplay };
+        var originalSettings = settings.Copy();
+        var custom = settings.Copy();
+        custom.PollIntervalMilliseconds = 250; custom.RewardRefreshMinutes = 3;
+        custom.OverlayFontFamily = "Consolas";
+        custom.HiddenFields = OverlayField.MapName | OverlayField.RankDamage | OverlayField.Source;
+        var applyError = ApplySettings(custom);
+        bool intervalsApplied = timer.Interval == TimeSpan.FromMilliseconds(250) && rewards.RefreshInterval == TimeSpan.FromMinutes(3);
+        bool fontApplied = FontFamily.Source == "Consolas" && values[0].FontFamily.Source == "Consolas";
+        bool fieldsHidden = map.Visibility == Visibility.Collapsed && fieldRows[1].Visibility == Visibility.Collapsed && source.Visibility == Visibility.Collapsed && fieldRows[0].Visibility == Visibility.Visible;
+        var hiddenSettings = settings.Copy(); hiddenSettings.HiddenFields = OverlayField.All; ApplySettings(hiddenSettings);
+        Render(DisplayInfo.Resolve(BroadcastReader.Invalid("测试不可用状态"), null));
+        bool unavailableRetained = unavailablePanel.Visibility == Visibility.Visible && unavailable.Text == DisplayInfo.UnavailableText && card.Opacity == 1;
+        lastDisplay = null;
+        ApplySettings(originalSettings);
+        var report = new { HotkeysRegistered = hotkeys?.RegisteredCount, LockedClickThrough = locked, UnlockedMouse = unlocked, HideWorks = hidden, ShowWorks = shown, PositionPersists = moved, MissingFileActionAvailable = missingFileAction, CustomSettingsAccepted = applyError is null, UpdateIntervalsApplied = intervalsApplied, CustomFontAppliedToTextAndNumbers = fontApplied, InformationHiddenIndependently = fieldsHidden, UnavailableMessageRetained = unavailableRetained, Display = lastDisplay };
         File.WriteAllText(output, System.Text.Json.JsonSerializer.Serialize(report, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
         SaveVisual(card, Path.ChangeExtension(output, ".png"), new Size(double.PositiveInfinity, double.PositiveInfinity));
         Quit();
