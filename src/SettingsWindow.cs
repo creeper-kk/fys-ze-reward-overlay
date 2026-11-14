@@ -165,12 +165,12 @@ public sealed class SettingsWindow : Window
         panel.Children.Add(gsiSource);
         var gsiPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 8) };
         gsiPanel.Children.Add(Button("保存 GSI 配置文件…", SaveGsiConfig, true));
-        Note(gsiPanel, @"将配置保存到 CS2 的 game\csgo\cfg 后重启游戏，即可读取击杀进度。选择 GSI 作为地图来源时，也可按 CT 比分推断关卡。");
+        Note(gsiPanel, @"将配置保存到 CS2 的 \steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg 后重启游戏，即可读取计分板内容。选择 GSI 作为地图来源时，也可按 CT 比分推断关卡。");
         var adjustments = new WrapPanel { IsEnabled = false, Margin = new Thickness(0, 0, 0, 8) };
         if (adjustStage is not null)
         {
-            adjustments.Children.Add(Button("降低关卡", () => adjustStage(-1), false));
-            adjustments.Children.Add(Button("提高关卡", () => adjustStage(1), false));
+            adjustments.Children.Add(Button("减少关卡计数", () => adjustStage(-1), false));
+            adjustments.Children.Add(Button("增加关卡计数", () => adjustStage(1), false));
             var stageControls = new StackPanel();
             stageControls.Children.Add(adjustments);
             stageControls.Children.Add(inferredStage);
