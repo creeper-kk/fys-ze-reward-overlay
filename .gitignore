@@ -1,0 +1,25 @@
+# Build output
+**/bin/
+**/obj/
+/app/
+/publish/
+*.pdb
+
+# Machine-specific state and downloaded reward data
+/settings.json
+/cache/
+/previews/
+/*-run/
+/smoke-*/
+*.log
+*.tmp
+*.lnk
+*.zip
+.env
+.env.*
+
+# IDE state
+.vs/
+.vscode/
+*.user
+*.suo
