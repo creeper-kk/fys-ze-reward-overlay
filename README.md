@@ -59,12 +59,11 @@ CS2 建议使用无边框窗口或普通窗口；独占全屏可能覆盖桌面�
 - **直播助手叠层文本（默认）**：从 `%LOCALAPPDATA%\fys\fys.broadcast.assistant.txt` 读取地图和关卡。在 FYS 助手的直播中心 → 直播助手 → 显示内容中勾选「地图」和「关卡」。
 - **CS2 GSI**：在「设置 → 数据与文件」切换地图来源。「自动配置」识别 CS2 的安装位置，将 `gamestate_integration_fys_reward_overlay.cfg` 写入 `game\csgo\cfg` 并打开该文件夹。「手动配置」可自行选择保存位置。保存悬浮窗设置后重启 CS2。优先使用匹配地图和区服的叠层文本关卡。读不到明确关卡时，若 `rewards` 只配置了一关，直接显示该关奖励。其余地图按 CT 比分加 1 推断，可用快捷键或设置页按钮修正。
 
-SVIP 玩家可在「数据与文件」把「是否为 SVIP」设为「是」，点击「保存设置」后，通关基础云点按原值的 120% 四舍五入显示。
+SVIP 玩家可在「数据与文件」把「是否为 SVIP」设为「是」，点击「保存设置」后，通关基础云点按原值的 120% 计算。
 - 官方奖励：[fyscs/cs2 — 2001/sharp/configs/rewards](https://github.com/fyscs/cs2/tree/master/2001/sharp/configs/rewards)。
 - 本机设置和缓存：`%LOCALAPPDATA%\FysZeRewardOverlay`。
 
 这里只显示公开配置的基础奖励，服务器同步、个人加成和活动倍率可能影响实际结算。
-显示关卡奖励信息不会依据玩家的VIP加成倍率而更改,所以通关结算奖励以服务器获取为准。
 
 ## 致谢
 
