@@ -33,10 +33,10 @@ dotnet publish .\src\FysZeRewardOverlay.csproj -c Release --no-self-contained -o
 
 | 操作 | 默认快捷键 |
 | --- | --- |
-| 显示 / 隐藏 | Alt + P |
-| 拖动 / 锁定 | Alt + O |
-| 打开设置 | Ctrl + Shift + F10 |
-| 提高 / 降低推断关卡 | Shift + = / Shift + - |
+| 显示 / 隐藏 | `Alt` + `P` |
+| 拖动 / 锁定 | `Alt` + `O` |
+| 打开设置 | `Ctrl` + `Shift` + `F10` |
+| 提高 / 降低推断关卡 | `Shift` + `=` / `Shift` + `-` |
 
 右键任务栏通知区域的托盘图标可打开菜单，双击图标可打开设置。设置窗口支持从顶部拖动、最小化和最大化。
 CS2 建议使用无边框窗口或普通窗口；独占全屏可能覆盖桌面悬浮窗。
