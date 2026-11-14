@@ -35,6 +35,10 @@ public sealed class SettingsWindow : Window
     private OverlayField textTarget;
     private bool loadingTextStyle;
     private readonly Dictionary<OverlayField, CheckBox> displayFields = new();
+    private readonly CheckBox obsEnabled = new() { Content = "启用 OBS 浏览器源" };
+    private readonly TextBlock obsStatus = OverlayWindow.Text("", 12, "#A1A1AA");
+    private readonly TextBox obsUrl = new() { Text = ObsBrowserSource.Url, IsReadOnly = true };
+    private Button obsOpen = null!;
     private readonly Dictionary<RewardValueAlignment, RadioButton> alignmentOptions = new();
     private readonly List<(RadioButton Button, ScrollViewer Page)> pages = new();
     private readonly StackPanel navigation = new();
@@ -46,6 +50,7 @@ public sealed class SettingsWindow : Window
         VerticalContentAlignment = VerticalAlignment.Stretch
     };
     private readonly DockPanel editor = new();
+    private readonly DockPanel rightPane = new() { Margin = new Thickness(4, 8, 22, 20) };
     private readonly TextBox[] shortcuts = new TextBox[5];
     private readonly TextBlock inferredStage = OverlayWindow.Text("等待比分推断关卡", 11, "#A1A1AA");
     private readonly Slider opacity = new() { Minimum = 0, Maximum = 95, TickFrequency = 5, IsSnapToTickEnabled = true };
@@ -140,10 +145,14 @@ public sealed class SettingsWindow : Window
         editor.Children.Add(bottom);
         editor.Children.Add(pageHost);
 
-        preview = new OverlaySettingsPreview((Style)FindResource("Option")) { Margin = new Thickness(4, 8, 22, 20) };
-        Grid.SetRow(preview, 1);
-        Grid.SetColumn(preview, 2);
-        root.Children.Add(preview);
+        preview = new OverlaySettingsPreview((Style)FindResource("Option"));
+        var integration = BuildComponentIntegration();
+        DockPanel.SetDock(integration, Dock.Bottom);
+        rightPane.Children.Add(integration);
+        rightPane.Children.Add(preview);
+        Grid.SetRow(rightPane, 1);
+        Grid.SetColumn(rightPane, 2);
+        root.Children.Add(rightPane);
         var caption = BuildCaptionButtons();
         Grid.SetColumn(caption, 1);
         Grid.SetColumnSpan(caption, 2);
@@ -312,6 +321,60 @@ public sealed class SettingsWindow : Window
         AddActionRow(panel, "恢复为默认", "将悬浮窗的全部设置恢复为默认配置。", reset);
     }
 
+    private Border BuildComponentIntegration()
+    {
+        var panel = new StackPanel();
+        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 5) };
+        DockPanel.SetDock(obsStatus, Dock.Right);
+        obsStatus.Margin = new Thickness(8, 0, 0, 0);
+        AutomationProperties.SetLiveSetting(obsStatus, AutomationLiveSetting.Polite);
+        header.Children.Add(obsStatus);
+        header.Children.Add(OverlayWindow.Text("组件集成", 15, "#F0F0F2", true));
+        panel.Children.Add(header);
+
+        obsEnabled.Style = (Style)FindResource("VisibilitySwitch");
+        obsEnabled.Margin = new Thickness(-8, 0, -8, 5);
+        panel.Children.Add(obsEnabled);
+
+        Label(panel, "浏览器源 URL").Margin = new Thickness(0, 0, 0, 5);
+        AutomationProperties.SetName(obsUrl, "浏览器源 URL");
+        obsUrl.FontFamily = new FontFamily("Consolas");
+        StyleTextBox(obsUrl);
+        panel.Children.Add(obsUrl);
+        var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 7) };
+        actions.Children.Add(Button("复制 URL", () =>
+        {
+            try { Clipboard.SetText(obsUrl.Text); SetSuccess("已复制浏览器源 URL"); }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                obsUrl.Focus(); obsUrl.SelectAll(); SetError("剪贴板暂时不可用，请按 Ctrl+C 重试。");
+            }
+        }, true));
+        obsOpen = Button("在浏览器预览", () => OpenLink(obsUrl.Text), false);
+        UpdateObsStatus(false, "");
+        actions.Children.Add(obsOpen);
+        panel.Children.Add(actions);
+        var instructions = OverlayWindow.Text("启用后保存设置，再将 URL 粘贴到 OBS 的「浏览器」源。", 11, "#A1A1AA");
+        instructions.TextWrapping = TextWrapping.Wrap;
+        panel.Children.Add(instructions);
+
+        return new Border
+        {
+            Margin = new Thickness(0, 12, 0, 0), Padding = new Thickness(14, 11, 14, 12),
+            Background = OverlayWindow.Brush("#19191B"), BorderBrush = OverlayWindow.Brush("#2B2B2E"),
+            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(9), Child = panel
+        };
+    }
+
+    internal void UpdateObsStatus(bool running, string detail)
+    {
+        obsStatus.Text = running ? "服务已启动" : detail.Length > 0 ? "服务启动失败" : "服务未启用";
+        obsStatus.Foreground = OverlayWindow.Brush(running ? "#A4ED86" : detail.Length > 0 ? "#FFC2BC" : "#A1A1AA");
+        obsStatus.ToolTip = detail.Length > 0 ? detail : null;
+        AutomationProperties.SetHelpText(obsStatus, detail);
+        obsOpen.IsEnabled = running;
+    }
+
     private static void AddActionRow(Panel panel, string name, string description, Button button)
     {
         var row = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
@@ -336,6 +399,7 @@ public sealed class SettingsWindow : Window
         path.Text = next.BroadcastPath;
         pollSeconds.Text = (next.PollIntervalMilliseconds / 1000d).ToString("0.###", CultureInfo.CurrentCulture);
         rewardMinutes.Text = next.RewardRefreshMinutes.ToString(CultureInfo.CurrentCulture);
+        obsEnabled.IsChecked = next.ObsEnabled;
         var hotkeys = next.Hotkeys;
         for (int i = 0; i < shortcuts.Length; i++) shortcuts[i].Text = hotkeys[i];
         opacity.Value = next.BackgroundOpacity * 100;
@@ -367,15 +431,15 @@ public sealed class SettingsWindow : Window
         Note(panel, "版本 " + version);
         Note(panel, "作者 creeper_kk");
         Label(panel, "GitHub 仓库");
-        var link = Button(repository, () => OpenAboutLink(repository), false);
+        var link = Button(repository, () => OpenLink(repository), false);
         link.Content = new TextBlock { Text = repository, TextWrapping = TextWrapping.Wrap };
         panel.Children.Add(link);
-        var acknowledgements = Button("致谢与开源依赖", () => OpenAboutLink(repository + "/blob/main/ACKNOWLEDGMENTS.md"), false);
+        var acknowledgements = Button("致谢与开源依赖", () => OpenLink(repository + "/blob/main/ACKNOWLEDGMENTS.md"), false);
         acknowledgements.Margin = new Thickness(0, 10, 0, 0);
         panel.Children.Add(acknowledgements);
     }
 
-    private void OpenAboutLink(string url)
+    private void OpenLink(string url)
     {
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
         catch (Win32Exception ex) { SetError("无法打开链接：" + ex.Message); }
@@ -720,7 +784,7 @@ public sealed class SettingsWindow : Window
         button.IsChecked = true;
         pageHost.Content = page;
         bool about = button.Parent == sidebarFooter;
-        preview.Visibility = about ? Visibility.Collapsed : Visibility.Visible;
+        rightPane.Visibility = about ? Visibility.Collapsed : Visibility.Visible;
         Grid.SetColumnSpan(editor, about ? 2 : 1);
     }
 
@@ -900,6 +964,7 @@ public sealed class SettingsWindow : Window
         next.BroadcastPath = selectedPath;
         next.PollIntervalMilliseconds = milliseconds;
         next.RewardRefreshMinutes = minutes;
+        next.ObsEnabled = obsEnabled.IsChecked == true;
         var message = apply(next, true);
         if (message is not null) SetError(message);
         else SetSuccess("设置已保存");
@@ -934,5 +999,6 @@ public sealed class SettingsWindow : Window
         error.Text = "";
         saved.Text = value;
     }
+    internal int PageCount => pages.Count;
     internal void SelectPreviewTab(int index) => SelectPage(index);
 }

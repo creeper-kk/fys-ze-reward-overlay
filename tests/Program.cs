@@ -138,7 +138,7 @@ try
     Check(loaded.StageUpHotkey == "Shift+=" && loaded.StageDownHotkey == "Shift+-", "old settings receive the default stage hotkeys");
     Check(loaded.GlobalTextStyle == new OverlayTextStyle() && loaded.FieldTextStyles.Count == 0, "existing settings keep the original per-field typography");
     Check(loaded.PollIntervalMilliseconds == 600 && loaded.RewardRefreshMinutes == 10 &&
-        loaded.HiddenFields == new Settings().HiddenFields && loaded.OverlayFontFamily == FontCatalog.DefaultName,
+        loaded.HiddenFields == new Settings().HiddenFields && loaded.OverlayFontFamily == FontCatalog.DefaultName && !loaded.ObsEnabled,
         "old settings receive current defaults for absent fields");
     loaded.PollIntervalMilliseconds = 0; loaded.RewardRefreshMinutes = 99999; loaded.Save(temporary);
     loaded = Settings.Load(temporary);
@@ -146,11 +146,12 @@ try
 
     var exported = Path.Combine(temporary, "backup.json");
     settings.Locked = false;
+    settings.ObsEnabled = true;
     settings.Export(exported);
     var imported = Settings.Import(exported);
     imported.Export(exported);
     Check(imported.MapSource == MapSource.Gsi && imported.BroadcastPath == "" && imported.Left == -100 &&
-        !imported.Locked && imported.ValueAlignment == RewardValueAlignment.Center &&
+        !imported.Locked && imported.ObsEnabled && imported.ValueAlignment == RewardValueAlignment.Center &&
         imported.TextStyleFor(OverlayField.Unavailable).Color == "#ABCDEF",
         "configuration round trip preserves source, window placement, lock and appearance");
     var defaultSettings = Settings.Load(Path.Combine(temporary, "fresh"));
@@ -158,7 +159,7 @@ try
         defaultSettings.Scale == 0.85 && defaultSettings.RowSpacing == 6 && defaultSettings.ColumnSpacing == -24 &&
         defaultSettings.ValueAlignment == RewardValueAlignment.Left && defaultSettings.GlobalTextStyle.Size == 28 &&
         defaultSettings.PollIntervalMilliseconds == 10000 && defaultSettings.RewardRefreshMinutes == 1440 &&
-        defaultSettings.Left == 2234 && defaultSettings.Top == 250 && defaultSettings.Locked &&
+        defaultSettings.Left == 2234 && defaultSettings.Top == 250 && defaultSettings.Locked && !defaultSettings.ObsEnabled &&
         defaultSettings.Hides(OverlayField.ErrorDetail) && !defaultSettings.Hides(OverlayField.MapName),
         "fresh install uses the same layout and shortcuts as restoring defaults");
     var persistedBeforeImport = File.ReadAllText(Path.Combine(temporary, "settings.json"));

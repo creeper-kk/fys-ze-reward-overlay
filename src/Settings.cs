@@ -41,6 +41,7 @@ public sealed class Settings
     public RewardValueAlignment ValueAlignment { get; set; }
     public int PollIntervalMilliseconds { get; set; } = 600;
     public int RewardRefreshMinutes { get; set; } = 10;
+    public bool ObsEnabled { get; set; }
     public string OverlayFontFamily { get; set; } = FontCatalog.DefaultName;
     public OverlayTextStyle GlobalTextStyle { get; set; } = new();
     public Dictionary<OverlayField, OverlayTextStyle> FieldTextStyles { get; set; } = new();

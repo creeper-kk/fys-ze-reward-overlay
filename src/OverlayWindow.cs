@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Net;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -27,6 +28,9 @@ public sealed class OverlayWindow : Window
     private SettingsWindow? settingsWindow;
     private GsiListener? gsi;
     private string gsiError = "";
+    private ObsBrowserSource? obs;
+    private RewardCard? obsCard;
+    private string obsError = "";
     private (string Map, int? Server)? stageOffsetScope;
     private int stageOffset;
     private readonly RewardCard card;
@@ -74,6 +78,7 @@ public sealed class OverlayWindow : Window
         Loaded += (_, _) =>
         {
             ApplyMapSource();
+            ApplyObsSettings();
             Tick();
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded, PlaceWindow);
             timer.Start();
@@ -91,6 +96,7 @@ public sealed class OverlayWindow : Window
             trayMenu?.Dispose();
             trayIcon?.Dispose();
             gsi?.Dispose();
+            obs?.Dispose();
             rewards.Dispose();
         };
         MouseLeftButtonDown += StartDrag;
@@ -237,6 +243,43 @@ public sealed class OverlayWindow : Window
         if (lastDisplay == info) return;
         lastDisplay = info;
         card.Render(info, inputUnavailable, demo);
+        PublishObsFrame(info);
+    }
+
+    private void ApplyObsSettings()
+    {
+        obsError = "";
+        if (settings.ObsEnabled)
+        {
+            try { obs ??= new ObsBrowserSource(); }
+            catch (HttpListenerException ex) { obsError = ex.Message; }
+            if (obs is not null)
+            {
+                obsCard ??= new RewardCard(() => { }, () => { }, () => { });
+                var appearance = settings.Copy();
+                // The broadcast card always uses its normal display appearance.
+                appearance.Locked = true;
+                obsCard.ApplyAppearance(appearance);
+            }
+        }
+        else
+        {
+            obs?.Dispose();
+            obs = null;
+            obsCard = null;
+        }
+        UpdateObsStatus();
+    }
+
+    private void UpdateObsStatus() => settingsWindow?.UpdateObsStatus(obs is not null, obsError);
+
+    private void PublishObsFrame(DisplayInfo info)
+    {
+        if (obs is null || obsCard is null) return;
+        obsCard.Render(info, inputUnavailable, demo);
+        using var png = new MemoryStream();
+        RenderVisual(obsCard.Element, png, new Size(double.PositiveInfinity, double.PositiveInfinity));
+        obs.Publish(png.ToArray());
     }
 
     private void ApplyUpdateIntervals()
@@ -332,6 +375,7 @@ public sealed class OverlayWindow : Window
             settingsWindow = null;
         };
         UpdateGsiStatus();
+        UpdateObsStatus();
         gsiStatusTimer.Start();
         settingsWindow.Show();
         settingsWindow.Activate();
@@ -367,7 +411,11 @@ public sealed class OverlayWindow : Window
         identity = ""; generation++;
         ApplyMapSource();
         ApplyUpdateIntervals();
-        ApplyAppearance(); UpdateLayout(); PlaceWindow(); Tick();
+        ApplyObsSettings();
+        ApplyAppearance(); UpdateLayout(); PlaceWindow();
+        var previousDisplay = lastDisplay;
+        Tick();
+        if (lastDisplay is { } info && ReferenceEquals(info, previousDisplay)) PublishObsFrame(info);
         return null;
     }
     private void SaveSettings()
@@ -385,6 +433,12 @@ public sealed class OverlayWindow : Window
     // Render the application's own visual tree for layout QA; no desktop or other application is captured.
     internal static void SaveVisual(FrameworkElement element, string path, Size size)
     {
+        using var file = File.Create(path);
+        RenderVisual(element, file, size);
+    }
+
+    private static void RenderVisual(FrameworkElement element, Stream output, Size size)
+    {
         var margin = element.Margin;
         element.Margin = new Thickness(0);
         element.Measure(size);
@@ -393,7 +447,7 @@ public sealed class OverlayWindow : Window
         var bitmap = new RenderTargetBitmap((int)Math.Ceiling(element.ActualWidth), (int)Math.Ceiling(element.ActualHeight), 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(element);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-        using var file = File.Create(path); encoder.Save(file);
+        encoder.Save(output);
         element.Margin = margin;
     }
     internal void RenderPreviews(string output)
@@ -409,7 +463,7 @@ public sealed class OverlayWindow : Window
         var settingsSize = new Size(1180, 750);
         layout.Width = settingsSize.Width;
         layout.Height = settingsSize.Height;
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < settingsPreview.PageCount; i++)
         {
             settingsPreview.SelectPreviewTab(i);
             SaveVisual(layout, Path.Combine(output, "settings-tab-" + i + ".png"), settingsSize);
