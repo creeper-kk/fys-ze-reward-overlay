@@ -38,6 +38,12 @@ public sealed class SettingsWindow : Window
     private OverlayField textTarget;
     private bool loadingTextStyle;
     private readonly Dictionary<OverlayField, CheckBox> displayFields = new();
+    private readonly StackPanel displayRows = new() { AllowDrop = true, Background = Brushes.Transparent };
+    private readonly Dictionary<OverlayField, Grid> sortableRows = new();
+    private readonly Border displayDropLine = new()
+    {
+        Height = 2, Background = OverlayWindow.Brush("#0078D4"), IsHitTestVisible = false
+    };
     private readonly CheckBox obsEnabled = new() { Content = "启用 OBS 浏览器源" };
     private readonly TextBlock obsStatus = OverlayWindow.Text("", 12, "#A1A1AA");
     private readonly TextBox obsUrl = new() { Text = ObsBrowserSource.Url, IsReadOnly = true };
@@ -268,13 +274,24 @@ public sealed class SettingsWindow : Window
 
         panel = AddPage("显示信息", "\uE890");
         Label(panel, "开启要在悬浮窗中显示的项目");
+        Note(panel, "按住左侧的拖动柄上下移动，调整悬浮窗和 OBS 的显示顺序。");
         var visibilityStyle = (Style)FindResource("VisibilitySwitch");
         foreach (var (field, label) in OverlayOptions.Fields)
         {
             var check = new CheckBox { Content = label, Style = visibilityStyle };
             displayFields.Add(field, check);
-            panel.Children.Add(check);
+            if (!OverlayOptions.ReorderableFields.Contains(field)) panel.Children.Add(check);
+            else
+            {
+                if (displayRows.Parent is null) panel.Children.Add(displayRows);
+                var row = CreateSortableRow(field, check);
+                sortableRows.Add(field, row);
+                displayRows.Children.Add(row);
+            }
         }
+        displayRows.DragOver += OnDisplayDragOver;
+        displayRows.DragLeave += (_, _) => ClearDisplayDropLine();
+        displayRows.Drop += OnDisplayDrop;
         var showButtons = new WrapPanel { Margin = new Thickness(0, 4, 0, 4) };
         showButtons.Children.Add(Button("显示全部", () => { foreach (var check in displayFields.Values) check.IsChecked = true; }, false));
         showButtons.Children.Add(Button("仅显示四项奖励", () =>
@@ -415,6 +432,90 @@ public sealed class SettingsWindow : Window
         panel.Children.Add(row);
     }
 
+    private Grid CreateSortableRow(OverlayField field, CheckBox check)
+    {
+        var row = new Grid { Tag = field };
+        var layout = new DockPanel();
+        var grip = new TextBlock
+        {
+            Text = "⠿", Foreground = OverlayWindow.Brush("#A1A1AA"), Width = 26,
+            Background = Brushes.Transparent, Cursor = Cursors.SizeNS, FontSize = 18,
+            TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "拖动排序 · " + check.Content
+        };
+        Point start = default;
+        grip.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            start = e.GetPosition(displayRows);
+            grip.CaptureMouse();
+            e.Handled = true;
+        };
+        grip.PreviewMouseLeftButtonUp += (_, _) => grip.ReleaseMouseCapture();
+        grip.MouseMove += (_, e) =>
+        {
+            if (!grip.IsMouseCaptured || e.LeftButton != MouseButtonState.Pressed) return;
+            var delta = e.GetPosition(displayRows) - start;
+            if (Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance &&
+                Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance) return;
+            grip.ReleaseMouseCapture();
+            try { DragDrop.DoDragDrop(grip, new DataObject(typeof(Grid), row), DragDropEffects.Move); }
+            finally { ClearDisplayDropLine(); }
+        };
+        DockPanel.SetDock(grip, Dock.Left);
+        layout.Children.Add(grip);
+        layout.Children.Add(check);
+        row.Children.Add(layout);
+        return row;
+    }
+
+    private int DisplayDropIndex(Point position)
+    {
+        var children = displayRows.Children;
+        for (int i = 0; i < children.Count; i++)
+        {
+            var row = (Grid)children[i];
+            if (position.Y < row.TranslatePoint(new Point(0, row.ActualHeight / 2), displayRows).Y) return i;
+        }
+        return children.Count;
+    }
+
+    private void OnDisplayDragOver(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        e.Effects = DragDropEffects.None;
+        ClearDisplayDropLine();
+        if (e.Data.GetData(typeof(Grid)) is not Grid row || !displayRows.Children.Contains(row)) return;
+        e.Effects = DragDropEffects.Move;
+        int index = DisplayDropIndex(e.GetPosition(displayRows));
+        int currentIndex = displayRows.Children.IndexOf(row);
+        if (index == currentIndex || index == currentIndex + 1) return;
+        bool atEnd = index == displayRows.Children.Count;
+        var target = (Grid)displayRows.Children[atEnd ? index - 1 : index];
+        displayDropLine.VerticalAlignment = atEnd ? VerticalAlignment.Bottom : VerticalAlignment.Top;
+        target.Children.Add(displayDropLine);
+    }
+
+    private void ClearDisplayDropLine()
+    {
+        if (displayDropLine.Parent is Grid parent) parent.Children.Remove(displayDropLine);
+    }
+
+    private void OnDisplayDrop(object sender, DragEventArgs e)
+    {
+        ClearDisplayDropLine();
+        if (e.Data.GetData(typeof(Grid)) is not Grid row || !displayRows.Children.Contains(row)) return;
+        e.Handled = true;
+        e.Effects = DragDropEffects.Move;
+        var children = displayRows.Children;
+        int from = children.IndexOf(row);
+        int to = DisplayDropIndex(e.GetPosition(displayRows));
+        if (to > from) to--;
+        if (from == to) return;
+        children.RemoveAt(from);
+        children.Insert(to, row);
+        UpdatePreview();
+    }
+
     private void LoadEditor(Settings next)
     {
         loadingSettings = true;
@@ -433,6 +534,8 @@ public sealed class SettingsWindow : Window
         columnSpacing.Value = next.ColumnSpacing;
         foreach (var (alignment, option) in alignmentOptions) option.IsChecked = alignment == next.ValueAlignment;
         fonts.SelectedValue = FontCatalog.Resolve(next.OverlayFontFamily).Source;
+        displayRows.Children.Clear();
+        foreach (var field in next.DisplayOrder) displayRows.Children.Add(sortableRows[field]);
         foreach (var (field, check) in displayFields) check.IsChecked = !next.Hides(field);
         styleDrafts.Clear();
         foreach (var (field, style) in next.FieldTextStyles) styleDrafts[field] = TextStyleDraft.FromStyle(style);
@@ -1099,6 +1202,7 @@ public sealed class SettingsWindow : Window
         draft.ColumnSpacing = (int)columnSpacing.Value;
         draft.ValueAlignment = valueAlignment;
         draft.OverlayFontFamily = (fonts.SelectedItem as FontOption)?.Name ?? FontCatalog.DefaultName;
+        draft.DisplayOrder = displayRows.Children.Cast<Grid>().Select(row => (OverlayField)row.Tag).ToArray();
         draft.HiddenFields = displayFields.Where(entry => entry.Value.IsChecked != true)
             .Aggregate(OverlayField.None, (fields, entry) => fields | entry.Key);
         return draft;

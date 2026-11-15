@@ -48,6 +48,7 @@ public sealed class Settings
     public Dictionary<OverlayField, OverlayTextStyle> FieldTextStyles { get; set; } = new();
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public OverlayField HiddenFields { get; set; } = DefaultHiddenFields;
+    public OverlayField[] DisplayOrder { get; set; } = (OverlayField[])OverlayOptions.ReorderableFields.Clone();
     public double? Left { get; set; }
     public double? Top { get; set; }
     public bool Locked { get; set; } = true;
@@ -121,6 +122,8 @@ public sealed class Settings
             .Where(entry => OverlayTypography.Labels.ContainsKey(entry.Key) && entry.Value is not null)
             .ToDictionary(entry => entry.Key, entry => entry.Value.Validated());
         HiddenFields &= OverlayField.All;
+        var defaultOrder = OverlayOptions.ReorderableFields;
+        DisplayOrder = (DisplayOrder ?? Array.Empty<OverlayField>()).Intersect(defaultOrder).Union(defaultOrder).ToArray();
         return this;
     }
 
@@ -137,6 +140,7 @@ public sealed class Settings
     {
         var copy = (Settings)MemberwiseClone();
         copy.FieldTextStyles = new(FieldTextStyles);
+        copy.DisplayOrder = (OverlayField[])DisplayOrder.Clone();
         return copy;
     }
     [JsonIgnore]

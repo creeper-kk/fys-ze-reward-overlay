@@ -148,6 +148,9 @@ public sealed class OverlayWindow : Window
         }
         var broadcast = ReadMap();
         var data = rewards.GetLastResult(broadcast.Map);
+        bool mapChanged = identity != broadcast.Identity;
+        if (mapChanged && data is null && broadcast.CanFetchRewards)
+            data = rewards.GetLocalFallback(broadcast.Map);
         settingsWindow?.UpdateInferredStage(broadcast, data, stageOffset);
         inputUnavailable = broadcast.FileUnavailable;
         if (inputUnavailable && interactiveSetup && notifiedMissingPath != settings.BroadcastPath)
@@ -157,11 +160,11 @@ public sealed class OverlayWindow : Window
                 "。右键托盘选择文本，或按 " + settings.SettingsHotkey + " 打开设置。", Forms.ToolTipIcon.Info);
         }
         else if (!inputUnavailable) notifiedMissingPath = "";
-        if (identity != broadcast.Identity)
+        if (mapChanged)
         {
             identity = broadcast.Identity;
             generation++;
-            Render(DisplayInfo.Resolve(broadcast, broadcast.IsGsiStageFallback ? data : null));
+            Render(DisplayInfo.Resolve(broadcast, data));
         }
         else if (lastDisplay is { Available: true } displayed && displayed.Kills != broadcast.Kills)
         {

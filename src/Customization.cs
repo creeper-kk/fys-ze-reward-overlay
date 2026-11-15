@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Markup;
 using System.Windows.Media;
@@ -9,6 +10,7 @@ using System.Windows.Media;
 namespace FysZeRewardOverlay;
 
 [Flags]
+[JsonConverter(typeof(JsonStringEnumConverter<OverlayField>))]
 public enum OverlayField
 {
     None = 0,
@@ -41,6 +43,10 @@ public static class OverlayOptions
         (OverlayField.Source, "数据来源 / 缓存状态"), (OverlayField.HotkeyHint, "底部快捷键提示"),
         (OverlayField.ErrorDetail, "无法获取信息的详细原因")
     };
+
+    internal static readonly OverlayField[] ReorderableFields = Fields.Select(option => option.Field)
+        .Where(field => field is not (OverlayField.Heading or OverlayField.Source or OverlayField.HotkeyHint or OverlayField.ErrorDetail))
+        .ToArray();
 
     public static bool TryIntervals(string pollSeconds, string rewardMinutes, out int milliseconds, out int minutes, out string error)
     {

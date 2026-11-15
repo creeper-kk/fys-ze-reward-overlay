@@ -99,7 +99,7 @@ public static class BroadcastReader
 public record Reward(int RankPasses, int RankDamage, int EconPasses, int EconDamage)
 {
     public long GetRankPasses(bool isSvip) =>
-        isSvip ? (long)Math.Round(RankPasses * 1.2m, MidpointRounding.AwayFromZero) : RankPasses;
+        isSvip ? (long)Math.Floor(RankPasses * 1.2m) : RankPasses;
 }
 
 public readonly record struct DamageProgress(long Bonus, decimal RemainingKills, double Fraction)
@@ -116,10 +116,18 @@ public static class RewardParser
 {
     public static Dictionary<int, Reward> Parse(string text)
     {
-        using var doc = JsonDocument.Parse(text.TrimStart('\uFEFF'), new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
-        if (doc.RootElement.ValueKind != JsonValueKind.Object) throw new FormatException("奖励配置不是对象");
+        using var doc = ReadDocument(text);
+        return Parse(doc.RootElement);
+    }
+
+    internal static JsonDocument ReadDocument(string text) => JsonDocument.Parse(text.TrimStart('\uFEFF'),
+        new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+
+    internal static Dictionary<int, Reward> Parse(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) throw new FormatException("奖励配置不是对象");
         var result = new Dictionary<int, Reward>();
-        foreach (var entry in doc.RootElement.EnumerateObject())
+        foreach (var entry in root.EnumerateObject())
         {
             if (!int.TryParse(entry.Name, NumberStyles.None, CultureInfo.InvariantCulture, out var stage) || stage < 1 || stage > 999)
                 throw new FormatException("奖励关卡编号无效");
@@ -135,7 +143,10 @@ public static class RewardParser
     }
 }
 
-public record RewardData(Dictionary<int, Reward>? Rewards, DateTimeOffset? FetchedAt, bool Offline, string Error);
+public record RewardData(Dictionary<int, Reward>? Rewards, DateTimeOffset? FetchedAt, bool Offline, string Error)
+{
+    public bool Bundled { get; init; }
+}
 public record DisplayInfo(bool Available, string Map, string Title, int? Stage, Reward? Reward, string Source, string Detail)
 {
     public const string UnavailableText = "当前无法获取该地图信息";
@@ -160,8 +171,11 @@ public record DisplayInfo(bool Available, string Map, string Title, int? Stage, 
         if (data.Rewards is null) return Fail(data.Error);
         if (!data.Rewards.TryGetValue(stage.Value, out var reward))
             return Fail("未找到第 " + stage + " 关的奖励配置") with { InferredStageMissingReward = inferred };
-        var source = data.Offline ? "离线缓存 · " + data.FetchedAt?.ToLocalTime().ToString("MM-dd HH:mm") : "官方配置 · 已同步";
-        return new(true, broadcast.Map, broadcast.Title, stage, reward, source, data.Offline ? "联网失败，使用上次成功获取的配置" : "伤害转化比 = 伤害 : 1 点货币")
+        var source = data.Bundled ? "离线配置 · 随版本附带" : data.Offline
+            ? "离线缓存 · " + data.FetchedAt?.ToLocalTime().ToString("MM-dd HH:mm") : "官方配置 · 已同步";
+        var detail = data.Bundled ? "使用发布时打包的奖励配置" : data.Offline
+            ? "使用上次成功获取的配置" : "伤害转化比 = 伤害 : 1 点货币";
+        return new(true, broadcast.Map, broadcast.Title, stage, reward, source, detail)
             { StageInferred = inferred, Kills = broadcast.Kills };
     }
     public static string Ratio(int number) => number == 0 ? "未启用" : number.ToString("N0", CultureInfo.InvariantCulture) + " : 1";
@@ -169,6 +183,11 @@ public record DisplayInfo(bool Available, string Map, string Title, int? Stage, 
 
 public sealed class RewardRepository : IDisposable
 {
+    private static readonly Lazy<JsonDocument> bundledRewards = new(() =>
+    {
+        using var stream = typeof(RewardRepository).Assembly.GetManifestResourceStream("rewards.json")!;
+        return JsonDocument.Parse(stream);
+    });
     private readonly HttpClient http;
     private readonly string cacheDirectory;
     private readonly TimeProvider clock;
@@ -192,9 +211,32 @@ public sealed class RewardRepository : IDisposable
     }
     public void Invalidate() => memory.Clear();
     internal RewardData? GetLastResult(string map) => memory.TryGetValue(map, out var existing) ? existing.Data : null;
+
+    private static bool IsValidMap(string map) => Regex.IsMatch(map, @"^ze_[a-z0-9_-]{1,120}\z");
+
+    internal RewardData? GetLocalFallback(string map)
+    {
+        if (!IsValidMap(map)) return null;
+        var path = Path.Combine(cacheDirectory, map + ".json");
+        try
+        {
+            if (File.Exists(path))
+            {
+                var cache = JsonSerializer.Deserialize<CacheEnvelope>(File.ReadAllText(path));
+                if (cache?.Map == map && cache.FetchedAt <= clock.GetUtcNow().AddMinutes(5) && !string.IsNullOrEmpty(cache.Body))
+                    return new(RewardParser.Parse(cache.Body), cache.FetchedAt, true, "");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or FormatException or InvalidOperationException or ArgumentException) { }
+
+        return bundledRewards.Value.RootElement.TryGetProperty(map, out var bundled)
+            ? new(RewardParser.Parse(bundled), null, true, "") { Bundled = true }
+            : null;
+    }
+
     public async Task<RewardData> GetAsync(string map)
     {
-        if (!Regex.IsMatch(map, @"^ze_[a-z0-9_-]{1,120}$")) return new(null, null, false, "地图名称无效");
+        if (!IsValidMap(map)) return new(null, null, false, "地图名称无效");
         var now = clock.GetUtcNow();
         if (memory.TryGetValue(map, out var existing))
         {
@@ -215,29 +257,21 @@ public sealed class RewardRepository : IDisposable
             {
                 response.EnsureSuccessStatusCode();
                 var body = await response.Content.ReadAsStringAsync();
-                var rewards = RewardParser.Parse(body);
+                using var parsed = RewardParser.ReadDocument(body);
+                var rewards = RewardParser.Parse(parsed.RootElement);
                 result = new(rewards, now, false, "");
                 try
                 {
                     Directory.CreateDirectory(cacheDirectory);
-                    AtomicFile.Write(path, JsonSerializer.Serialize(new CacheEnvelope(map, now, body)));
+                    var compact = JsonSerializer.Serialize(parsed.RootElement);
+                    AtomicFile.Write(path, JsonSerializer.Serialize(new CacheEnvelope(map, now, compact)));
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Online display still works without disk cache. */ }
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or FormatException or InvalidOperationException)
         {
-            result = new(null, null, false, "奖励获取失败，请检查网络后重试");
-            try
-            {
-                if (File.Exists(path))
-                {
-                    var cache = JsonSerializer.Deserialize<CacheEnvelope>(File.ReadAllText(path));
-                    if (cache?.Map == map && cache.FetchedAt <= clock.GetUtcNow().AddMinutes(5))
-                        result = new(RewardParser.Parse(cache.Body), cache.FetchedAt, true, "");
-                }
-            }
-            catch (Exception cacheError) when (cacheError is IOException or UnauthorizedAccessException or JsonException or FormatException or InvalidOperationException or ArgumentException) { }
+            result = GetLocalFallback(map) ?? new(null, null, false, "奖励获取失败，请检查网络后重试");
         }
         memory[map] = (result, clock.GetUtcNow().AddSeconds(30));
         return result;

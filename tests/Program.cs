@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using FysZeRewardOverlay;
 
 int checks = 0;
@@ -26,9 +27,10 @@ Check(result.Available && result.Reward!.RankPasses == 18 && result.Reward.RankD
 var svipReward = new Reward(5, 20000, 12, 24000);
 Check(svipReward.GetRankPasses(false) == 5 && svipReward.GetRankPasses(true) == 6 &&
     (svipReward with { RankPasses = 2 }).GetRankPasses(true) == 2 &&
-    (svipReward with { RankPasses = 3 }).GetRankPasses(true) == 4 &&
+    (svipReward with { RankPasses = 3 }).GetRankPasses(true) == 3 &&
+    (svipReward with { RankPasses = 4 }).GetRankPasses(true) == 4 &&
     (svipReward with { RankPasses = int.MaxValue }).GetRankPasses(true) == 2_576_980_376,
-    "SVIP rounds the base cloud points and supports the full reward range");
+    "SVIP floors the base cloud points and supports the full reward range");
 Check(!DisplayInfo.Resolve(broadcast with { Stage = 3 }, data).Available, "missing stage never falls back to stage one");
 Check(!DisplayInfo.Resolve(broadcast with { Stage = null }, data).Available, "missing broadcast stage is unavailable");
 Check(!DisplayInfo.Resolve(BroadcastReader.Parse("地图: fys_lobby_liyue"), data).Available, "non-ZE unavailable");
@@ -135,19 +137,37 @@ try
     using var repo = new RewardRepository(Path.Combine(temporary, "cache"), new HttpClient(handler));
     var online = await repo.GetAsync("ze_test");
     Check(online.Rewards![4].EconPasses == 12 && !online.Offline, "online fetch");
+    var cachePath = Path.Combine(temporary, "cache", "ze_test.json");
+    using (var cache = JsonDocument.Parse(File.ReadAllText(cachePath)))
+    using (var compact = JsonDocument.Parse(cache.RootElement.GetProperty("Body").GetString()!))
+        Check(RewardParser.Parse(compact.RootElement).SequenceEqual(parsed), "downloaded JSONC is cached as compact valid JSON with identical rewards");
     await repo.GetAsync("ze_test");
     Check(handler.Requests == 1, "throttle repeated requests");
     handler.Fail = true; repo.Invalidate();
     var cached = await repo.GetAsync("ze_test");
     Check(cached.Offline && cached.Rewards![1].RankPasses == 30, "network failure falls back to disk cache");
-    Check((await repo.GetAsync("ze_missing")).Rewards is null, "offline map without cache unavailable");
+    var bundled = repo.GetLocalFallback(broadcast.Map);
+    Check(bundled is { Offline: true, Bundled: true } && bundled.Rewards![4] == parsed[4] && handler.Requests == 2,
+        "a fresh install can resolve bundled rewards before making a network request");
+    Check(DisplayInfo.Resolve(broadcast, await repo.GetAsync(broadcast.Map)).Source.StartsWith("离线配置"),
+        "bundled rewards are visibly marked when the first fetch fails");
+    var bundledCache = Path.Combine(temporary, "cache", broadcast.Map + ".json");
+    File.WriteAllText(bundledCache, "broken");
+    Check(repo.GetLocalFallback(broadcast.Map) is { Bundled: true }, "a damaged cache falls back to the snapshot");
+    File.WriteAllText(bundledCache, JsonSerializer.Serialize(new { broadcast.Map, FetchedAt = DateTimeOffset.UtcNow, Body = json }));
+    Check(repo.GetLocalFallback(broadcast.Map) is { Bundled: false, Rewards.Count: 2 },
+        "the legacy JSONC cache takes precedence over the snapshot");
+    Check((await repo.GetAsync("ze_missing")).Rewards is null, "offline map missing from both cache and snapshot is unavailable");
     handler.Fail = false; handler.Status = HttpStatusCode.NotFound; repo.Invalidate();
-    Check((await repo.GetAsync("ze_test")).Rewards is null, "authoritative 404 does not display removed cached rewards");
+    Check((await repo.GetAsync(broadcast.Map)).Rewards is null, "authoritative 404 takes precedence over local rewards");
     handler.Status = HttpStatusCode.OK; handler.Body = "html error"; repo.Invalidate();
     Check((await repo.GetAsync("ze_test")).Offline, "malformed response cannot overwrite valid cache");
-    var cachePath = Path.Combine(temporary, "cache", "ze_test.json");
     File.WriteAllText(cachePath, "broken"); handler.Fail = true; repo.Invalidate();
     Check((await repo.GetAsync("ze_test")).Rewards is null, "corrupted cache safely unavailable");
+    using (var snapshot = typeof(RewardRepository).Assembly.GetManifestResourceStream("rewards.json")!)
+    using (var snapshotJson = JsonDocument.Parse(snapshot))
+        Check(snapshotJson.RootElement.EnumerateObject().All(map => RewardParser.Parse(map.Value).Count > 0),
+            "the entire bundled snapshot is readable by the reward parser");
     var settings = new Settings { Scale = 1.25, ToggleHotkey = "Ctrl+Shift+F8", Left = -100, IsSvip = true };
     settings.Save(temporary);
     var loaded = Settings.Load(temporary);
@@ -165,8 +185,15 @@ try
     Check(loaded.RowSpacing == 14 && loaded.ColumnSpacing == -16, "row spacing and tighter columns persist");
     Check(loaded.ValueAlignment == RewardValueAlignment.Center, "reward value alignment persists");
     Check(loaded.Hides(OverlayField.RankDamage) && loaded.Hides(OverlayField.MapName) && !loaded.Hides(OverlayField.RankPasses), "hidden fields persist independently");
+    settings.DisplayOrder = new[] { OverlayField.EconPasses, OverlayField.MapName, OverlayField.EconPasses, OverlayField.Source, (OverlayField)9999 };
+    settings.Save(temporary); loaded = Settings.Load(temporary);
+    var expectedOrder = new[] { OverlayField.EconPasses, OverlayField.MapName }.Union(OverlayOptions.ReorderableFields);
+    Check(loaded.DisplayOrder.SequenceEqual(expectedOrder) && Settings.Import(Path.Combine(temporary, "settings.json")).DisplayOrder.SequenceEqual(expectedOrder),
+        "display order round-trips, ignores unknown or repeated rows, and fills in missing rows");
     var copy = loaded.Copy(); copy.HiddenFields = OverlayField.None;
-    Check(loaded.Hides(OverlayField.MapName), "cancelling edited visibility does not mutate saved settings");
+    copy.DisplayOrder[0] = OverlayField.Stage;
+    Check(loaded.Hides(OverlayField.MapName) && loaded.DisplayOrder[0] == OverlayField.EconPasses,
+        "cancelling edited visibility and order does not mutate saved settings");
     settings.GlobalTextStyle = new(21, "#FEDCBA", 500);
     settings.FieldTextStyles[OverlayField.Stage] = new(Size: 36, Weight: 800);
     settings.FieldTextStyles[OverlayField.Unavailable] = new(Color: "#abcdef");
@@ -196,6 +223,7 @@ try
     loaded = Settings.Load(temporary);
     Check(loaded.ToggleHotkey == "Alt+P" && loaded.MoveHotkey == "Alt+O" && loaded.BackgroundOpacity == 0.15 && loaded.Left == 2057, "upgrade preserves existing personal settings");
     Check(!loaded.IsSvip, "existing profiles default to non-SVIP");
+    Check(loaded.DisplayOrder.SequenceEqual(OverlayOptions.ReorderableFields), "existing profiles retain the original row order");
     Check(loaded.MapSource == MapSource.Broadcast && loaded.BroadcastPath == BroadcastFiles.DefaultPath, "existing settings default to the original TXT source");
     Check(loaded.RowSpacing == 0 && loaded.ColumnSpacing == 0, "old settings retain the default spacing");
     Check(loaded.ValueAlignment == RewardValueAlignment.Right, "old settings retain right-aligned values");

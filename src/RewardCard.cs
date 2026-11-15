@@ -26,7 +26,6 @@ internal sealed class RewardCard
     private readonly TextBlock hint = OverlayTypography.CreateText(OverlayField.HotkeyHint, "");
     private readonly List<(OverlayField Field, TextBlock Text, OverlayTextStyle Default)> styledText = new();
     private static readonly OverlayField[] RewardFields = { OverlayField.RankPasses, OverlayField.RankDamage, OverlayField.EconPasses, OverlayField.EconDamage };
-    private const OverlayField RewardFieldMask = OverlayField.RankPasses | OverlayField.RankDamage | OverlayField.EconPasses | OverlayField.EconDamage;
     private static readonly string[] RewardLabels = { "通关云点", "云点转化比", "通关龙晶", "龙晶转化比" };
     private static readonly OverlayTextStyle RewardLabelStyle = new(32, "#AEAEAE", 400);
     private readonly TextBlock[] values = new TextBlock[4];
@@ -38,7 +37,7 @@ internal sealed class RewardCard
     private readonly DockPanel top = new() { Margin = new Thickness(0, 0, 0, 12) };
     private readonly StackPanel footer = new();
     private Button? selectFileButton;
-    private readonly StackPanel rewardRows = new();
+    private readonly Dictionary<OverlayField, FrameworkElement> displayRows = new();
     private readonly StackPanel unavailablePanel = new();
     private readonly StackPanel editButtons = new() { Orientation = Orientation.Horizontal };
     private Settings settings = new();
@@ -80,11 +79,11 @@ internal sealed class RewardCard
         top.Children.Add(editButtons);
         top.Children.Add(heading);
         content.Children.Add(top);
-        content.Children.Add(title);
+        displayRows.Add(OverlayField.MapTitle, title);
         map.Margin = new Thickness(0, 0, 0, 8);
-        content.Children.Add(map);
+        displayRows.Add(OverlayField.MapName, map);
         stage.Margin = new Thickness(0, 0, 0, 12);
-        content.Children.Add(stage);
+        displayRows.Add(OverlayField.Stage, stage);
 
         for (int i = 0; i < RewardFields.Length; i++)
         {
@@ -113,9 +112,9 @@ internal sealed class RewardCard
                 row.Children.Add(progress);
             }
             fieldRows[i] = row;
-            rewardRows.Children.Add(row);
+            displayRows.Add(field, row);
         }
-        content.Children.Add(rewardRows);
+        foreach (var field in settings.DisplayOrder) content.Children.Add(displayRows[field]);
         unavailable.Margin = new Thickness(0, 0, 0, 8);
         unavailablePanel.Children.Add(unavailable);
         reason.TextWrapping = TextWrapping.Wrap;
@@ -231,15 +230,14 @@ internal sealed class RewardCard
         title.Visibility = Show(!settings.Hides(OverlayField.MapTitle));
         map.Visibility = Show(!settings.Hides(OverlayField.MapName) && !string.IsNullOrWhiteSpace(info?.Map));
         stage.Visibility = Show(info?.Stage.HasValue == true && !settings.Hides(OverlayField.Stage));
-        for (int i = 0; i < RewardFields.Length; i++) fieldRows[i].Visibility = Show(!settings.Hides(RewardFields[i]));
-        rewardRows.Visibility = Show(info?.Available == true && (settings.HiddenFields & RewardFieldMask) != RewardFieldMask);
+        for (int i = 0; i < RewardFields.Length; i++)
+            fieldRows[i].Visibility = Show(info?.Available == true && !settings.Hides(RewardFields[i]));
         reason.Visibility = Show(!settings.Hides(OverlayField.ErrorDetail));
         source.Visibility = Show(!settings.Hides(OverlayField.Source));
         hint.Visibility = Show(!settings.Hides(OverlayField.HotkeyHint) || !settings.Locked);
         footer.Visibility = Show(source.Visibility == Visibility.Visible || hint.Visibility == Visibility.Visible);
         if (selectFileButton is not null) selectFileButton.Visibility = Show(inputUnavailable && !settings.Locked);
         ApplyRowSpacing(content);
-        ApplyRowSpacing(rewardRows);
         ApplyRowSpacing(unavailablePanel);
         SetTopMargin(hint, 5 + (source.Visibility == Visibility.Visible ? settings.RowSpacing : 0));
         ApplyColumnSpacing();
@@ -274,7 +272,7 @@ internal sealed class RewardCard
         {
             if (settings.Hides(RewardFields[i])) continue;
             width = Math.Max(width, values[i].FontSize * 10);
-            if (rewardRows.Visibility != Visibility.Visible) continue;
+            if (fieldRows[i].Visibility != Visibility.Visible) continue;
             var label = fieldRows[i].Children[0];
             var unconstrained = new Size(double.PositiveInfinity, double.PositiveInfinity);
             label.Measure(unconstrained);
@@ -283,7 +281,7 @@ internal sealed class RewardCard
             numberWidth = Math.Max(numberWidth, values[i].DesiredSize.Width);
         }
 
-        if (rewardRows.Visibility != Visibility.Visible)
+        if (numberWidth == 0)
         {
             content.Width = width;
             return;
@@ -296,6 +294,17 @@ internal sealed class RewardCard
     internal void ApplyAppearance(Settings next)
     {
         bool svipChanged = settings.IsSvip != next.IsSvip;
+        if (!settings.DisplayOrder.AsSpan().SequenceEqual(next.DisplayOrder))
+        {
+            for (int i = 0; i < next.DisplayOrder.Length; i++)
+            {
+                var row = displayRows[next.DisplayOrder[i]];
+                int index = i + 1; // The title bar stays above the sortable rows.
+                if (content.Children[index] == row) continue;
+                content.Children.Remove(row);
+                content.Children.Insert(index, row);
+            }
+        }
         settings = next;
         System.Windows.Documents.TextElement.SetFontFamily(card, FontCatalog.Resolve(settings.OverlayFontFamily));
         foreach (var (field, text, defaults) in styledText)

@@ -4,6 +4,7 @@
 
 ## 数据与界面参考
 
+- 程序附带风云社（fyscs）公开奖励配置快照。快照合并了地图文件并移除了注释，数据按 CC BY-NC-SA 4.0 提供。见 [上游奖励配置](https://github.com/fyscs/cs2/tree/1f27a0e2c51e9ed0d4df65436f8d19a6db987d14/2001/sharp/configs/rewards) 和 [许可文本](https://github.com/fyscs/cs2/blob/1f27a0e2c51e9ed0d4df65436f8d19a6db987d14/LICENSE.md)。
 - Valve 提供 Counter-Strike 的 Game State Integration，用于读取地图、比分和本局击杀数。[GSI 文档](https://developer.valvesoftware.com/wiki/Counter-Strike:_Global_Offensive_Game_State_Integration)
 - Widdit 的 Now Playing 提供无边框设置窗口和侧栏布局的设计参考。[Now Playing](https://github.com/Widdit/now-playing-service)
 
