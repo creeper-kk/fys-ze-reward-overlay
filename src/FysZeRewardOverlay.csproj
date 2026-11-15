@@ -7,7 +7,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>FysZeRewardOverlay</AssemblyName>
-    <Version>1.2.5</Version>
+    <Version>1.2.5.1</Version>
     <Authors>creeper_kk</Authors>
     <RepositoryUrl>https://github.com/creeper-kk/fys-ze-reward-overlay</RepositoryUrl>
     <ApplicationManifest>app.manifest</ApplicationManifest>

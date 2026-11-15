@@ -98,8 +98,8 @@ public static class BroadcastReader
 
 public record Reward(int RankPasses, int RankDamage, int EconPasses, int EconDamage)
 {
-    public long GetRankPasses(bool isSvip) =>
-        isSvip ? (long)Math.Floor(RankPasses * 1.2m) : RankPasses;
+    public long GetRankPasses(bool isSvip, long damagePoints = 0) =>
+        isSvip ? RankPasses + (long)Math.Floor((RankPasses + (decimal)damagePoints) * 0.2m) : RankPasses;
 }
 
 public readonly record struct DamageProgress(long Bonus, decimal RemainingKills, double Fraction)

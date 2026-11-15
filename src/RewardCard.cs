@@ -165,7 +165,7 @@ internal sealed class RewardCard
         {
             var rank = DamageProgress.Calculate(info.Kills, reward.RankDamage);
             var econ = DamageProgress.Calculate(info.Kills, reward.EconDamage);
-            SetPassReward(values[0], rankProgress, reward.GetRankPasses(settings.IsSvip), rank, lastRankProgress);
+            SetPassReward(values[0], rankProgress, reward.GetRankPasses(settings.IsSvip, rank?.Bonus ?? 0), rank, lastRankProgress);
             values[1].Text = DisplayInfo.Ratio(reward.RankDamage);
             SetPassReward(values[2], econProgress, reward.EconPasses, econ, lastEconProgress);
             values[3].Text = DisplayInfo.Ratio(reward.EconDamage);

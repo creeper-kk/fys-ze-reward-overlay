@@ -30,7 +30,13 @@ Check(svipReward.GetRankPasses(false) == 5 && svipReward.GetRankPasses(true) == 
     (svipReward with { RankPasses = 3 }).GetRankPasses(true) == 3 &&
     (svipReward with { RankPasses = 4 }).GetRankPasses(true) == 4 &&
     (svipReward with { RankPasses = int.MaxValue }).GetRankPasses(true) == 2_576_980_376,
-    "SVIP floors the base cloud points and supports the full reward range");
+    "SVIP floors the bonus with no damage points and supports the full reward range");
+var rankReward = svipReward with { RankPasses = 4 };
+Check(rankReward.GetRankPasses(true, 1) == 5 && rankReward.GetRankPasses(false, 1) == 4,
+    "with one damage point, 4+1 becomes 5+1 for SVIP");
+Check(rankReward.GetRankPasses(true, 5) == 5 && rankReward.GetRankPasses(true, 6) == 6 &&
+    (rankReward with { RankPasses = 0 }).GetRankPasses(true, 5) == 1,
+    "damage points count toward each SVIP bonus threshold while remaining a separate display value");
 Check(!DisplayInfo.Resolve(broadcast with { Stage = 3 }, data).Available, "missing stage never falls back to stage one");
 Check(!DisplayInfo.Resolve(broadcast with { Stage = null }, data).Available, "missing broadcast stage is unavailable");
 Check(!DisplayInfo.Resolve(BroadcastReader.Parse("地图: fys_lobby_liyue"), data).Available, "non-ZE unavailable");
@@ -112,6 +118,10 @@ try
     Check((await ReleaseCheck.GetLatestAsync(repository, "1.2.10.0", releaseClient)).Comparison == 0 &&
         (await ReleaseCheck.GetLatestAsync(repository, "1.3.0", releaseClient)).Comparison < 0,
         "release check recognizes matching and newer local versions");
+    releaseHandler.Body = """{"tag_name":"v1.2.5.1"}""";
+    Check((await ReleaseCheck.GetLatestAsync(repository, "1.2.5", releaseClient)).Comparison > 0 &&
+        (await ReleaseCheck.GetLatestAsync(repository, "1.2.5.1", releaseClient)).Comparison == 0,
+        "release check recognizes four-part patch versions");
     releaseHandler.Body = """{"tag_name":"latest"}""";
     bool invalidRelease = false;
     try { await ReleaseCheck.GetLatestAsync(repository, "1.2.9", releaseClient); }
