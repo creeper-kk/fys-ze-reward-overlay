@@ -18,6 +18,7 @@ public record Broadcast(string Map, string Title, int? Stage, string StageText, 
     internal bool IsGsiStageFallback { get; init; }
     public int? CtScore { get; init; }
     public int? Kills { get; init; }
+    public int? RoundDamage { get; init; }
     public bool IsZe => Regex.IsMatch(Map, @"^ze_[a-z0-9_-]{1,120}$", RegexOptions.IgnoreCase);
     internal bool CanFetchRewards => IsZe && (IsGsiStageFallback || (Stage.HasValue && Error.Length == 0));
     public string Identity => Map + "|" + Title + "|" + Stage + "|" + StageText + "|" + Error + "|" + FileUnavailable + "|" + ServerNumber + "|" + CtScore;
@@ -102,14 +103,16 @@ public record Reward(int RankPasses, int RankDamage, int EconPasses, int EconDam
         isSvip ? RankPasses + (long)Math.Floor((RankPasses + (decimal)damagePoints) * 0.2m) : RankPasses;
 }
 
-public readonly record struct DamageProgress(long Bonus, decimal RemainingKills, double Fraction)
+public readonly record struct DamageProgress(long Bonus, decimal RemainingThousands, double Fraction)
 {
-    public static DamageProgress? Calculate(int? kills, int damagePerReward)
+    public static DamageProgress? Calculate(int? kills, int damagePerReward) =>
+        FromDamage(kills * 1000L, damagePerReward);
+
+    internal static DamageProgress? FromDamage(long? damage, int damagePerReward)
     {
-        if (kills is not int count || count < 0 || damagePerReward <= 0) return null;
-        long damage = count * 1000L;
-        long remainder = damage % damagePerReward;
-        return new DamageProgress(damage / damagePerReward, (damagePerReward - remainder) / 1000m, (double)remainder / damagePerReward);
+        if (damage is not long total || total < 0 || damagePerReward <= 0) return null;
+        long remainder = total % damagePerReward;
+        return new DamageProgress(total / damagePerReward, (damagePerReward - remainder) / 1000m, (double)remainder / damagePerReward);
     }
 }
 public static class RewardParser
@@ -154,6 +157,7 @@ public record DisplayInfo(bool Available, string Map, string Title, int? Stage, 
     public bool StageInferred { get; init; }
     public bool InferredStageMissingReward { get; init; }
     public int? Kills { get; init; }
+    public int? RoundDamage { get; init; }
     public static DisplayInfo Resolve(Broadcast broadcast, RewardData? data)
     {
         if (broadcast.IsGsiStageFallback && data is null)
@@ -176,7 +180,7 @@ public record DisplayInfo(bool Available, string Map, string Title, int? Stage, 
         var detail = data.Bundled ? "使用发布时打包的奖励配置" : data.Offline
             ? "使用上次成功获取的配置" : "伤害转化比 = 伤害 : 1 点货币";
         return new(true, broadcast.Map, broadcast.Title, stage, reward, source, detail)
-            { StageInferred = inferred, Kills = broadcast.Kills };
+            { StageInferred = inferred, Kills = broadcast.Kills, RoundDamage = broadcast.RoundDamage };
     }
     public static string Ratio(int number) => number == 0 ? "未启用" : number.ToString("N0", CultureInfo.InvariantCulture) + " : 1";
 }
@@ -197,7 +201,8 @@ public sealed class RewardRepository : IDisposable
         get => refreshInterval;
         set
         {
-            if (value < TimeSpan.FromMinutes(1) || value > TimeSpan.FromDays(1)) throw new ArgumentOutOfRangeException(nameof(value));
+            if (value < TimeSpan.FromMinutes(1) || value > TimeSpan.FromMinutes(Settings.MaxRewardRefreshMinutes))
+                throw new ArgumentOutOfRangeException(nameof(value));
             refreshInterval = value;
         }
     }

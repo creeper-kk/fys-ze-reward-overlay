@@ -11,10 +11,11 @@ public sealed record OverlayTextStyle(double? Size = null, string? Color = null,
 {
     public const int MinSize = 8;
     public const int MaxSize = 64;
+    internal const string UseGlobalLabel = "使用全局配置";
 
     internal static readonly (int? Value, string Label)[] Weights =
     {
-        (null, "沿用"), (300, "细体"), (400, "常规"), (500, "中等"),
+        (null, UseGlobalLabel), (300, "细体"), (400, "常规"), (500, "中等"),
         (600, "半粗"), (700, "粗体"), (800, "特粗"), (900, "黑体")
     };
 
@@ -35,8 +36,8 @@ internal static class OverlayTypography
 {
     internal static readonly IReadOnlyDictionary<OverlayField, string> Labels = OverlayOptions.Fields.Concat(new[]
     {
-        (OverlayField.Unavailable, "无法获取信息提示"), (OverlayField.SettingsButton, "设置按钮"),
-        (OverlayField.LockButton, "锁定按钮"), (OverlayField.SelectFileButton, "选择" + BroadcastFiles.DisplayName + "按钮")
+        (OverlayField.Unavailable, "无法获取信息提示"), (OverlayField.SettingsButton, "菜单 · 设置"),
+        (OverlayField.LockButton, "菜单 · 锁定悬浮窗"), (OverlayField.SelectFileButton, "菜单 · 选择" + BroadcastFiles.DisplayName)
     }).ToDictionary(entry => entry.Item1, entry => entry.Item2);
 
     internal static OverlayTextStyle DefaultFor(OverlayField field) => field switch

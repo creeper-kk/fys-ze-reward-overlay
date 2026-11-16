@@ -12,6 +12,8 @@ internal sealed class OverlaySettingsPreview : DockPanel
     private readonly RadioButton unavailable;
     private readonly RadioButton move;
     private readonly Border canvas;
+    private readonly TextBlock menuLabel = new();
+    private readonly Border menuPreview;
     private readonly TextBlock empty = Text("当前模板中的显示项均已隐藏", 13, "#B6B6BD");
     private static readonly Brush GridBackground = CreateGridBackground();
     private static readonly Brush SolidBackground = Brush("#202023");
@@ -40,12 +42,23 @@ internal sealed class OverlaySettingsPreview : DockPanel
         AddAbove(backgrounds);
 
         var display = new Grid();
+        display.RowDefinitions.Add(new RowDefinition());
+        display.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         display.Children.Add(new Viewbox
         {
             Child = template.Element, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(12), IsHitTestVisible = false
         });
+        menuPreview = new Border
+        {
+            Child = menuLabel, Background = Brush("#1C2734"), BorderBrush = Brush("#324354"),
+            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(5), Padding = new Thickness(8, 5, 8, 5),
+            HorizontalAlignment = HorizontalAlignment.Center, Visibility = Visibility.Collapsed, Margin = new Thickness(12)
+        };
+        menuLabel.TextWrapping = TextWrapping.Wrap;
+        Grid.SetRow(menuPreview, 1);
+        display.Children.Add(menuPreview);
         empty.HorizontalAlignment = HorizontalAlignment.Center;
         empty.Visibility = Visibility.Collapsed;
         display.Children.Add(empty);
@@ -102,6 +115,14 @@ internal sealed class OverlaySettingsPreview : DockPanel
             ? DisplayInfo.Resolve(BroadcastReader.Invalid(showFileButton ? BroadcastFiles.DisplayName + "尚未生成" : "尚未读取到当前关卡"), null)
             : RewardCard.Sample;
         template.Render(info, showFileButton, false);
+        string? menuText = draft.Locked ? null : RewardCard.MoveMenuLabel(field);
+        menuPreview.Visibility = menuText is null ? Visibility.Collapsed : Visibility.Visible;
+        if (menuText is not null)
+        {
+            menuLabel.Text = menuText;
+            menuLabel.FontFamily = FontCatalog.Resolve(draft.OverlayFontFamily);
+            OverlayTypography.Apply(menuLabel, draft.TextStyleFor(field).WithFallback(OverlayTypography.DefaultFor(field)));
+        }
         empty.Visibility = template.Element.Opacity == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 

@@ -20,7 +20,7 @@ public sealed class GsiListener : IDisposable
     private readonly TimeProvider clock;
     private readonly TaskCompletionSource firstUpdate = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private MapUpdate? latest;
-    internal event Action? KillCountChanged;
+    internal event Action<bool, bool>? CombatStatsChanged;
     internal enum ConnectionState { Waiting, Receiving, TimedOut }
     internal ConnectionState State
     {
@@ -28,9 +28,20 @@ public sealed class GsiListener : IDisposable
         {
             var update = Volatile.Read(ref latest);
             if (update is null) return ConnectionState.Waiting;
-            return clock.GetElapsedTime(update.ReceivedAt) >= Expiry ? ConnectionState.TimedOut : ConnectionState.Receiving;
+            return IsExpired(update) ? ConnectionState.TimedOut : ConnectionState.Receiving;
         }
     }
+
+    internal int? CurrentRoundDamage
+    {
+        get
+        {
+            var update = Volatile.Read(ref latest);
+            return update is not null && !IsExpired(update) ? update.RoundDamage : null;
+        }
+    }
+
+    private bool IsExpired(MapUpdate update) => clock.GetElapsedTime(update.ReceivedAt) >= Expiry;
 
     public static string Config => $$"""
         "FYS ZE Reward Overlay"
@@ -46,6 +57,7 @@ public sealed class GsiListener : IDisposable
                 "provider" "1"
                 "player_id" "1"
                 "player_match_stats" "1"
+                "player_state" "1"
             }
         }
         """;
@@ -86,10 +98,11 @@ public sealed class GsiListener : IDisposable
     {
         var update = Volatile.Read(ref latest);
         if (update is null) return BroadcastReader.Invalid("等待 CS2 GSI 推送地图信息");
-        if (clock.GetElapsedTime(update.ReceivedAt) >= Expiry) return BroadcastReader.Invalid("CS2 GSI 推送已超时");
+        if (IsExpired(update)) return BroadcastReader.Invalid("CS2 GSI 推送已超时");
         if (update.Map.Length == 0) return BroadcastReader.Invalid("CS2 GSI 当前未提供地图名称");
 
-        var game = new Broadcast(update.Map, "", null, "", "") { ServerNumber = update.ServerNumber, Kills = update.Kills };
+        var game = new Broadcast(update.Map, "", null, "", "")
+            { ServerNumber = update.ServerNumber, Kills = update.Kills, RoundDamage = update.RoundDamage };
         if (!game.IsZe) return game;
         if (broadcastPath.Length > 0)
         {
@@ -97,7 +110,8 @@ public sealed class GsiListener : IDisposable
             if (game.Map == broadcast.Map && (update.ServerNumber is null ||
                 broadcast.ServerNumber is null || update.ServerNumber == broadcast.ServerNumber))
             {
-                if (broadcast.Stage.HasValue) return broadcast with { ServerNumber = update.ServerNumber, Kills = update.Kills };
+                if (broadcast.Stage.HasValue)
+                    return broadcast with { ServerNumber = update.ServerNumber, Kills = update.Kills, RoundDamage = update.RoundDamage };
                 game = game with { Title = broadcast.Title, StageText = broadcast.StageText };
             }
         }
@@ -109,28 +123,31 @@ public sealed class GsiListener : IDisposable
                 : "等待" + BroadcastFiles.DisplayName + "提供当前关卡，或等待 GSI 提供 CT 比分" };
     }
 
-    internal Broadcast AddKills(Broadcast broadcast)
+    internal Broadcast AddCombatStats(Broadcast broadcast)
     {
         var update = Volatile.Read(ref latest);
-        if (update is null || clock.GetElapsedTime(update.ReceivedAt) >= Expiry || update.Map != broadcast.Map ||
+        if (update is null || IsExpired(update) || update.Map != broadcast.Map ||
             (update.ServerNumber.HasValue && broadcast.ServerNumber.HasValue && update.ServerNumber != broadcast.ServerNumber))
             return broadcast;
-        return broadcast with { Kills = update.Kills };
+        return broadcast with { Kills = update.Kills, RoundDamage = update.RoundDamage };
     }
 
     private static string? SteamId(JsonElement node) =>
         node.ValueKind == JsonValueKind.Object && node.TryGetProperty("steamid", out var id) &&
         id.ValueKind == JsonValueKind.String ? id.GetString() : null;
 
-    private static int? ReadKills(JsonElement root)
+    private static (int? Kills, int? RoundDamage) ReadCombatStats(JsonElement root)
     {
-        if (!root.TryGetProperty("player", out var player) || player.ValueKind != JsonValueKind.Object) return null;
+        if (!root.TryGetProperty("player", out var player) || player.ValueKind != JsonValueKind.Object) return default;
         if (root.TryGetProperty("provider", out var provider) && SteamId(provider) is string localId &&
-            SteamId(player) != localId) return null;
-        return player.TryGetProperty("match_stats", out var stats) && stats.ValueKind == JsonValueKind.Object &&
-            stats.TryGetProperty("kills", out var kills) && kills.ValueKind == JsonValueKind.Number &&
-            kills.TryGetInt32(out int count) && count >= 0 ? count : null;
+            SteamId(player) != localId) return default;
+        return (ReadStat(player, "match_stats", "kills"), ReadStat(player, "state", "round_totaldmg"));
     }
+
+    private static int? ReadStat(JsonElement player, string group, string field) =>
+        player.TryGetProperty(group, out var stats) && stats.ValueKind == JsonValueKind.Object &&
+        stats.TryGetProperty(field, out var value) && value.ValueKind == JsonValueKind.Number &&
+        value.TryGetInt32(out int count) && count >= 0 ? count : null;
 
     private async Task ReceiveAsync()
     {
@@ -182,10 +199,14 @@ public sealed class GsiListener : IDisposable
                     score.TryGetInt32(out int points) && points is >= 0 and < int.MaxValue)
                     ctScore = points;
             }
-            var update = new MapUpdate(name, FysServer.ParseNumber(raw), ctScore, ReadKills(root), clock.GetTimestamp());
+            var (kills, roundDamage) = ReadCombatStats(root);
+            var update = new MapUpdate(name, FysServer.ParseNumber(raw), ctScore, kills, roundDamage, clock.GetTimestamp());
             var previous = Interlocked.Exchange(ref latest, update);
-            if (previous?.Kills != update.Kills || update.Kills.HasValue && (previous?.Map != update.Map || previous.ServerNumber != update.ServerNumber))
-                KillCountChanged?.Invoke();
+            bool scopeChanged = previous is null || previous.Map != update.Map || previous.ServerNumber != update.ServerNumber ||
+                IsExpired(previous);
+            bool killsChanged = previous?.Kills != kills || (kills.HasValue && scopeChanged);
+            bool damageChanged = previous?.RoundDamage != roundDamage || (roundDamage.HasValue && scopeChanged);
+            if (killsChanged || damageChanged) CombatStatsChanged?.Invoke(killsChanged, damageChanged);
             return HttpStatusCode.OK;
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException) { return HttpStatusCode.BadRequest; }
@@ -193,5 +214,5 @@ public sealed class GsiListener : IDisposable
 
     public void Dispose() => listener.Close();
 
-    private sealed record MapUpdate(string Map, int? ServerNumber, int? CtScore, int? Kills, long ReceivedAt);
+    private sealed record MapUpdate(string Map, int? ServerNumber, int? CtScore, int? Kills, int? RoundDamage, long ReceivedAt);
 }

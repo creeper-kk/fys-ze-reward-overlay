@@ -22,12 +22,22 @@ public sealed class Settings
     internal const int MaxRowSpacing = 48;
     internal const int MinColumnSpacing = -48;
     internal const int MaxColumnSpacing = 128;
+    internal const bool NativeDamageEnabled = false;
+    internal const int MaxRewardRefreshMinutes = 4320;
+    internal const int DefaultAutoUpdateDays = 3;
+    internal const int MaxAutoUpdateDays = 365;
     internal const OverlayField DefaultHiddenFields = OverlayField.Heading | OverlayField.MapTitle |
         OverlayField.MapName | OverlayField.Stage | OverlayField.Source | OverlayField.HotkeyHint;
 
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public MapSource MapSource { get; set; }
     public bool IsSvip { get; set; }
+    private bool useNativeDamage;
+    public bool UseNativeDamage
+    {
+        get => NativeDamageEnabled && useNativeDamage;
+        set => useNativeDamage = value;
+    }
     public string BroadcastPath { get; set; } = BroadcastFiles.DefaultPath;
     public string ToggleHotkey { get; set; } = "Ctrl+Shift+F8";
     public string MoveHotkey { get; set; } = "Ctrl+Shift+F9";
@@ -42,6 +52,7 @@ public sealed class Settings
     public RewardValueAlignment ValueAlignment { get; set; }
     public int PollIntervalMilliseconds { get; set; } = 600;
     public int RewardRefreshMinutes { get; set; } = 10;
+    public int AutoUpdateDays { get; set; } = DefaultAutoUpdateDays;
     public bool ObsEnabled { get; set; }
     public string OverlayFontFamily { get; set; } = FontCatalog.DefaultName;
     public OverlayTextStyle GlobalTextStyle { get; set; } = new();
@@ -115,7 +126,8 @@ public sealed class Settings
         if (!Enum.IsDefined(MapSource)) MapSource = MapSource.Broadcast;
         if (string.IsNullOrWhiteSpace(BroadcastPath)) BroadcastPath = MapSource == MapSource.Gsi ? "" : BroadcastFiles.DefaultPath;
         PollIntervalMilliseconds = Math.Clamp(PollIntervalMilliseconds, 200, 60000);
-        RewardRefreshMinutes = Math.Clamp(RewardRefreshMinutes, 1, 1440);
+        RewardRefreshMinutes = Math.Clamp(RewardRefreshMinutes, 1, MaxRewardRefreshMinutes);
+        AutoUpdateDays = Math.Clamp(AutoUpdateDays, 0, MaxAutoUpdateDays);
         if (string.IsNullOrWhiteSpace(OverlayFontFamily)) OverlayFontFamily = FontCatalog.DefaultName;
         GlobalTextStyle = GlobalTextStyle?.Validated() ?? new();
         FieldTextStyles = (FieldTextStyles ?? new())

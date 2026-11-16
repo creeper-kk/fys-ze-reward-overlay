@@ -16,6 +16,11 @@ internal sealed class RewardCard
 {
     private readonly Border card = new();
     private readonly StackPanel content = new();
+    private readonly Border moveOutline = new()
+    {
+        BorderBrush = Brush("#A4ED86"), BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(9), IsHitTestVisible = false
+    };
     private readonly TextBlock heading = OverlayTypography.CreateText(OverlayField.Heading, "ZE  /  通关奖励");
     private readonly TextBlock title = OverlayTypography.CreateText(OverlayField.MapTitle, "等待地图信息");
     private readonly TextBlock map = OverlayTypography.CreateText(OverlayField.MapName, "");
@@ -36,10 +41,10 @@ internal sealed class RewardCard
     private DamageProgress? lastEconProgress;
     private readonly DockPanel top = new() { Margin = new Thickness(0, 0, 0, 12) };
     private readonly StackPanel footer = new();
-    private Button? selectFileButton;
+    private readonly ContextMenu moveMenu = new() { Background = Brush("#1C2734"), BorderBrush = Brush("#324354") };
+    private readonly MenuItem selectFileItem;
     private readonly Dictionary<OverlayField, FrameworkElement> displayRows = new();
     private readonly StackPanel unavailablePanel = new();
-    private readonly StackPanel editButtons = new() { Orientation = Orientation.Horizontal };
     private Settings settings = new();
     private DisplayInfo? lastDisplay;
     private bool inputUnavailable;
@@ -47,14 +52,17 @@ internal sealed class RewardCard
 
     internal FrameworkElement Element => card;
     internal static DisplayInfo Sample { get; } = new(true, "ze_ffxii_westersand_v7_t", "最终幻想 XII · 西沙", 4,
-        new(18, 20000, 12, 24000), "演示数据 · 非当前游戏", "伤害转化比 = 伤害 : 1 点货币") { Kills = 20 };
+        new(18, 20000, 12, 24000), "演示数据 · 非当前游戏", "伤害转化比 = 伤害 : 1 点货币") { Kills = 20, RoundDamage = 23500 };
 
     internal RewardCard(Action openSettings, Action toggleLock, Action selectBroadcastFile)
     {
         content.Width = 344;
         content.Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 3, ShadowDepth = 1, Opacity = 0.8 };
-        card.Child = content;
-        card.Padding = new Thickness(18, 2, 18, 2);
+        var layers = new Grid();
+        layers.Children.Add(content);
+        layers.Children.Add(moveOutline);
+        card.Child = layers;
+        content.Margin = new Thickness(18, 2, 18, 2);
         card.CornerRadius = new CornerRadius(9);
         card.Margin = new Thickness(2);
 
@@ -71,12 +79,6 @@ internal sealed class RewardCard
         map.TextWrapping = TextWrapping.Wrap;
         source.TextWrapping = TextWrapping.Wrap;
         unavailable.TextWrapping = TextWrapping.Wrap;
-        var settingsButton = SmallButton(OverlayField.SettingsButton, "设置", openSettings);
-        var lockButton = SmallButton(OverlayField.LockButton, "锁定", toggleLock);
-        editButtons.Children.Add(settingsButton);
-        editButtons.Children.Add(lockButton);
-        DockPanel.SetDock(editButtons, Dock.Right);
-        top.Children.Add(editButtons);
         top.Children.Add(heading);
         content.Children.Add(top);
         displayRows.Add(OverlayField.MapTitle, title);
@@ -120,32 +122,43 @@ internal sealed class RewardCard
         reason.TextWrapping = TextWrapping.Wrap;
         reason.Margin = new Thickness(0, 0, 0, 10);
         unavailablePanel.Children.Add(reason);
-        selectFileButton = SmallButton(OverlayField.SelectFileButton, BroadcastFiles.SelectLabel, selectBroadcastFile);
-        selectFileButton.Margin = new Thickness(0, 0, 0, 8);
-        selectFileButton.HorizontalAlignment = HorizontalAlignment.Left;
-        unavailablePanel.Children.Add(selectFileButton);
         content.Children.Add(unavailablePanel);
         footer.Children.Add(new Border { Height = 1, Background = Brush("#324354"), Margin = new Thickness(0, 0, 0, 8) });
         footer.Children.Add(source);
         hint.TextWrapping = TextWrapping.Wrap;
         footer.Children.Add(hint);
         content.Children.Add(footer);
+
+        moveMenu.PlacementTarget = card;
+        moveMenu.Items.Add(CreateMoveMenuItem(OverlayField.SettingsButton, openSettings));
+        moveMenu.Items.Add(CreateMoveMenuItem(OverlayField.LockButton, toggleLock));
+        selectFileItem = CreateMoveMenuItem(OverlayField.SelectFileButton, selectBroadcastFile);
+        moveMenu.Items.Add(selectFileItem);
     }
 
     private void RegisterText(OverlayField field, TextBlock text, OverlayTextStyle? defaults = null) =>
         styledText.Add((field, text, defaults ?? OverlayTypography.DefaultFor(field)));
 
-    private Button SmallButton(OverlayField field, string text, Action action)
+    internal static string? MoveMenuLabel(OverlayField field) => field switch
     {
+        OverlayField.SettingsButton => "设置…",
+        OverlayField.LockButton => "锁定悬浮窗",
+        OverlayField.SelectFileButton => BroadcastFiles.SelectLabel,
+        _ => null
+    };
+
+    private MenuItem CreateMoveMenuItem(OverlayField field, Action action)
+    {
+        string text = MoveMenuLabel(field)!;
         var label = OverlayTypography.CreateText(field, text);
-        label.TextWrapping = TextWrapping.Wrap;
         RegisterText(field, label);
-        var button = new Button { Content = label, Background = Brush("#263947"), Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(5, 0, 0, 0), BorderThickness = new Thickness(0), Cursor = Cursors.Hand };
-        System.Windows.Automation.AutomationProperties.SetName(button, text);
-        button.Click += (_, e) => { e.Handled = true; action(); };
-        return button;
+        var item = new MenuItem { Header = label, Padding = new Thickness(6, 4, 6, 4) };
+        System.Windows.Automation.AutomationProperties.SetName(item, text);
+        item.Click += (_, _) => action();
+        return item;
     }
 
+    internal void OpenMoveMenu() => moveMenu.IsOpen = true;
 
     internal void Render(DisplayInfo info, bool fileUnavailable, bool isDemo)
     {
@@ -163,8 +176,11 @@ internal sealed class RewardCard
         unavailablePanel.Visibility = info.Available ? Visibility.Collapsed : Visibility.Visible;
         if (info.Reward is { } reward)
         {
-            var rank = DamageProgress.Calculate(info.Kills, reward.RankDamage);
-            var econ = DamageProgress.Calculate(info.Kills, reward.EconDamage);
+            DamageProgress? Progress(int ratio) => settings.UseNativeDamage
+                ? DamageProgress.FromDamage(info.RoundDamage, ratio)
+                : DamageProgress.Calculate(info.Kills, ratio);
+            var rank = Progress(reward.RankDamage);
+            var econ = Progress(reward.EconDamage);
             SetPassReward(values[0], rankProgress, reward.GetRankPasses(settings.IsSvip, rank?.Bonus ?? 0), rank, lastRankProgress);
             values[1].Text = DisplayInfo.Ratio(reward.RankDamage);
             SetPassReward(values[2], econProgress, reward.EconPasses, econ, lastEconProgress);
@@ -204,7 +220,7 @@ internal sealed class RewardCard
             fill.ScaleX = 0;
             return;
         }
-        string remaining = result.RemainingKills.ToString("0.###", CultureInfo.CurrentCulture);
+        string remaining = result.RemainingThousands.ToString("0.###", CultureInfo.CurrentCulture);
         text.Text = $"{baseReward}+{result.Bonus}";
         text.Inlines.Add(new Run($" [{remaining}↑]") { Foreground = Brush("#AEAEAE") });
         if (previous == result) return;
@@ -226,7 +242,11 @@ internal sealed class RewardCard
     {
         static Visibility Show(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
         var info = lastDisplay;
-        top.Visibility = Show(!settings.Hides(OverlayField.Heading) || !settings.Locked);
+        var normalFields = OverlayField.All & ~OverlayField.ErrorDetail;
+        bool allHidden = info?.Available == true && (settings.HiddenFields & normalFields) == normalFields;
+        bool needsMoveHandle = allHidden && !settings.Locked;
+        heading.Text = needsMoveHandle ? "ZE  /  拖动模式" : "ZE  /  通关奖励";
+        top.Visibility = Show(!settings.Hides(OverlayField.Heading) || needsMoveHandle);
         title.Visibility = Show(!settings.Hides(OverlayField.MapTitle));
         map.Visibility = Show(!settings.Hides(OverlayField.MapName) && !string.IsNullOrWhiteSpace(info?.Map));
         stage.Visibility = Show(info?.Stage.HasValue == true && !settings.Hides(OverlayField.Stage));
@@ -234,16 +254,15 @@ internal sealed class RewardCard
             fieldRows[i].Visibility = Show(info?.Available == true && !settings.Hides(RewardFields[i]));
         reason.Visibility = Show(!settings.Hides(OverlayField.ErrorDetail));
         source.Visibility = Show(!settings.Hides(OverlayField.Source));
-        hint.Visibility = Show(!settings.Hides(OverlayField.HotkeyHint) || !settings.Locked);
+        hint.Visibility = Show(!settings.Hides(OverlayField.HotkeyHint));
         footer.Visibility = Show(source.Visibility == Visibility.Visible || hint.Visibility == Visibility.Visible);
-        if (selectFileButton is not null) selectFileButton.Visibility = Show(inputUnavailable && !settings.Locked);
+        selectFileItem.Visibility = Show(inputUnavailable && !settings.Locked);
         ApplyRowSpacing(content);
         ApplyRowSpacing(unavailablePanel);
         SetTopMargin(hint, 5 + (source.Visibility == Visibility.Visible ? settings.RowSpacing : 0));
         ApplyColumnSpacing();
         // With every normal field hidden, keep the window invisible until edit mode or an error.
-        var normalFields = OverlayField.All & ~OverlayField.ErrorDetail;
-        card.Opacity = info?.Available == true && settings.Locked && (settings.HiddenFields & normalFields) == normalFields ? 0 : 1;
+        card.Opacity = allHidden && settings.Locked ? 0 : 1;
     }
 
     private void ApplyRowSpacing(Panel panel)
@@ -294,6 +313,8 @@ internal sealed class RewardCard
     internal void ApplyAppearance(Settings next)
     {
         bool svipChanged = settings.IsSvip != next.IsSvip;
+        bool damageModeChanged = settings.UseNativeDamage != next.UseNativeDamage;
+        if (damageModeChanged) lastRankProgress = lastEconProgress = null;
         if (!settings.DisplayOrder.AsSpan().SequenceEqual(next.DisplayOrder))
         {
             for (int i = 0; i < next.DisplayOrder.Length; i++)
@@ -306,7 +327,9 @@ internal sealed class RewardCard
             }
         }
         settings = next;
-        System.Windows.Documents.TextElement.SetFontFamily(card, FontCatalog.Resolve(settings.OverlayFontFamily));
+        var fontFamily = FontCatalog.Resolve(settings.OverlayFontFamily);
+        TextElement.SetFontFamily(card, fontFamily);
+        moveMenu.FontFamily = fontFamily;
         foreach (var (field, text, defaults) in styledText)
             OverlayTypography.Apply(text, settings.TextStyleFor(field).WithFallback(defaults));
         var alignment = settings.ValueAlignment switch
@@ -321,13 +344,11 @@ internal sealed class RewardCard
         ApplySourceColor();
         double backgroundOpacity = settings.Locked ? settings.BackgroundOpacity : Math.Max(0.15, settings.BackgroundOpacity);
         card.Background = new SolidColorBrush(Color.FromArgb((byte)Math.Round(backgroundOpacity * 255), 13, 20, 28));
-        card.BorderThickness = new Thickness(settings.Locked ? 0 : 1);
-        card.BorderBrush = settings.Locked ? null : Brush("#A4ED86");
+        moveOutline.Visibility = settings.Locked ? Visibility.Collapsed : Visibility.Visible;
+        if (settings.Locked) moveMenu.IsOpen = false;
         content.LayoutTransform = new ScaleTransform(settings.Scale, settings.Scale);
-        editButtons.Visibility = settings.Locked ? Visibility.Collapsed : Visibility.Visible;
-        heading.Text = settings.Locked ? "ZE  /  通关奖励" : "ZE  /  拖动模式";
-        hint.Text = settings.Locked ? settings.ToggleHotkey + " 显隐   ·   " + settings.MoveHotkey + " 拖动" : "按住卡片拖动 · Esc 锁定 · 右键设置";
-        if (svipChanged && lastDisplay is { } info) Render(info, inputUnavailable, demo);
+        hint.Text = settings.ToggleHotkey + " 显隐   ·   " + settings.MoveHotkey + " 拖动";
+        if ((svipChanged || damageModeChanged) && lastDisplay is { } info) Render(info, inputUnavailable, demo);
         else ApplyInformationVisibility();
     }
 
@@ -338,7 +359,7 @@ internal sealed class RewardCard
         source.Foreground = Brush(color);
     }
 
-    internal bool FileActionVisible => selectFileButton?.Visibility == Visibility.Visible;
+    internal bool FileActionVisible => selectFileItem.Visibility == Visibility.Visible;
     internal bool UsesFont(string family) => values[0].FontFamily.Source == family;
 
     internal bool ShowsCustomTypography()

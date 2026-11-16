@@ -53,8 +53,8 @@ public static class OverlayOptions
         milliseconds = 600; minutes = 10; error = "";
         if (!double.TryParse(pollSeconds, NumberStyles.Float, CultureInfo.CurrentCulture, out var seconds) || !double.IsFinite(seconds) || seconds < 0.2 || seconds > 60)
         { error = "地图 / 关卡读取间隔请输入 0.2～60 秒。"; return false; }
-        if (!int.TryParse(rewardMinutes, out minutes) || minutes < 1 || minutes > 1440)
-        { error = "奖励联网更新间隔请输入 1～1440 的整数分钟。"; return false; }
+        if (!int.TryParse(rewardMinutes, out minutes) || minutes < 1 || minutes > Settings.MaxRewardRefreshMinutes)
+        { error = $"奖励联网更新间隔请输入 1～{Settings.MaxRewardRefreshMinutes} 的整数分钟。"; return false; }
         milliseconds = (int)Math.Round(seconds * 1000);
         return true;
     }

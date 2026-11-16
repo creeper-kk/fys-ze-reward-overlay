@@ -26,6 +26,9 @@ public sealed class OverlayWindow : Window
     private TrayMenu? trayMenu;
     private System.Drawing.Icon? trayIcon;
     private SettingsWindow? settingsWindow;
+    internal AppUpdates? Updates { get; init; }
+    internal int AutoUpdateDays => settings.AutoUpdateDays;
+    internal Window UpdateDialogOwner => settingsWindow is { IsVisible: true, WindowState: not WindowState.Minimized } window ? window : this;
     private GsiListener? gsi;
     private string gsiError = "";
     private ObsBrowserSource? obs;
@@ -103,7 +106,7 @@ public sealed class OverlayWindow : Window
         MouseMove += MoveDrag;
         MouseLeftButtonUp += (_, _) => { if (dragStart is not null) ReleaseMouseCapture(); };
         LostMouseCapture += OnLostDragCapture;
-        MouseRightButtonUp += (_, _) => { if (!settings.Locked) OpenSettings(); };
+        MouseRightButtonUp += (_, _) => { if (!settings.Locked) card.OpenMoveMenu(); };
         KeyDown += (_, e) => { if (e.Key == Key.Escape && !settings.Locked) ToggleLock(); };
     }
 
@@ -116,15 +119,26 @@ public sealed class OverlayWindow : Window
 
     private void MoveDrag(object sender, MouseEventArgs e)
     {
-        if (dragStart is not { } start) return;
+        if (dragStart is null) return;
         if (e.LeftButton != MouseButtonState.Pressed) { ReleaseMouseCapture(); return; }
-        var position = start.Window + (PointToScreen(e.GetPosition(this)) - start.Cursor);
+        MoveDragTo(PointToScreen(e.GetPosition(this)));
+    }
+
+    private void MoveDragTo(Point cursor)
+    {
+        if (dragStart is not { } start) return;
+        var position = start.Window + (cursor - start.Cursor);
         Native.MoveWindow(new WindowInteropHelper(this).Handle, (int)Math.Round(position.X), (int)Math.Round(position.Y));
     }
 
     private void OnLostDragCapture(object sender, MouseEventArgs e)
     {
-        if (e.OriginalSource != this || dragStart is not { } start) return;
+        if (e.OriginalSource == this) CompleteDrag();
+    }
+
+    private void CompleteDrag()
+    {
+        if (dragStart is not { } start) return;
         dragStart = null;
         if (PointToScreen(new Point()) == start.Window) return;
         settings.Left = Left;
@@ -166,9 +180,10 @@ public sealed class OverlayWindow : Window
             generation++;
             Render(DisplayInfo.Resolve(broadcast, data));
         }
-        else if (lastDisplay is { Available: true } displayed && displayed.Kills != broadcast.Kills)
+        else if (lastDisplay is { Available: true } displayed &&
+            (settings.UseNativeDamage ? displayed.RoundDamage != broadcast.RoundDamage : displayed.Kills != broadcast.Kills))
         {
-            Render(displayed with { Kills = broadcast.Kills });
+            Render(displayed with { Kills = broadcast.Kills, RoundDamage = broadcast.RoundDamage });
         }
         if (!broadcast.CanFetchRewards || loading) return;
         FetchAndRender(broadcast, generation);
@@ -202,7 +217,7 @@ public sealed class OverlayWindow : Window
         if (!demo && gsi is null)
         {
             gsi = GsiListener.Start(out gsiError);
-            if (gsi is not null) gsi.KillCountChanged += OnKillCountChanged;
+            if (gsi is not null) gsi.CombatStatsChanged += OnCombatStatsChanged;
         }
         if (settings.MapSource == MapSource.Broadcast)
         {
@@ -212,16 +227,20 @@ public sealed class OverlayWindow : Window
         UpdateGsiStatus();
     }
 
-    private void UpdateGsiStatus() => settingsWindow?.UpdateGsiStatus(gsi?.State, gsiError, demo);
+    private void UpdateGsiStatus() => settingsWindow?.UpdateGsiStatus(gsi?.State, gsi?.CurrentRoundDamage, gsiError, demo);
 
-    private void OnKillCountChanged() => Dispatcher.BeginInvoke(DispatcherPriority.Background, Tick);
+    private void OnCombatStatsChanged(bool killsChanged, bool damageChanged) =>
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+        {
+            if (settings.UseNativeDamage ? damageChanged : killsChanged) Tick();
+        });
 
     private Broadcast ReadMap()
     {
         if (settings.MapSource != MapSource.Gsi)
         {
             var text = BroadcastReader.Read(settings.BroadcastPath);
-            return gsi?.AddKills(text) ?? text;
+            return gsi?.AddCombatStats(text) ?? text;
         }
         var broadcast = gsi?.Read(settings.BroadcastPath) ?? BroadcastReader.Invalid(gsiError);
         var scope = (broadcast.Map, broadcast.ServerNumber);
@@ -250,6 +269,7 @@ public sealed class OverlayWindow : Window
 
     private void Render(DisplayInfo info)
     {
+        info = settings.UseNativeDamage ? info with { Kills = null } : info with { RoundDamage = null };
         if (lastDisplay == info) return;
         lastDisplay = info;
         card.Render(info, inputUnavailable, demo);
@@ -378,7 +398,8 @@ public sealed class OverlayWindow : Window
             settingsWindow.Activate();
             return;
         }
-        settingsWindow = new SettingsWindow(() => settings, ApplySettings, RefreshRewards, ResetPosition, ToggleLock, AdjustStageOffset);
+        settingsWindow = new SettingsWindow(() => settings, ApplySettings, RefreshRewards, ResetPosition, ToggleLock, AdjustStageOffset)
+        { Updates = Updates };
         settingsWindow.Closed += (_, _) =>
         {
             gsiStatusTimer.Stop();
@@ -489,18 +510,34 @@ public sealed class OverlayWindow : Window
         if (!initialLock) ToggleLock();
         var lockedStyles = Native.GetWindowLong(handle, -20);
         bool locked = (lockedStyles & 0x20) != 0 && (lockedStyles & 0x08000000) != 0;
+        var originalDisplay = lastDisplay;
+        Render(RewardCard.Sample);
+        var rewardBounds = WindowBounds();
+        var unavailable = DisplayInfo.Resolve(BroadcastReader.Invalid("测试不可用状态"), null);
+        Render(unavailable);
+        var unavailableBounds = WindowBounds();
         ToggleLock();
         bool unlocked = (Native.GetWindowLong(handle, -20) & 0x20) == 0;
+        bool unavailableDragBoundsMatch = unavailableBounds == WindowBounds();
+        Render(RewardCard.Sample);
+        bool rewardDragBoundsMatch = rewardBounds == WindowBounds();
+        if (originalDisplay is not null) Render(originalDisplay);
         bool missingFileAction = !inputUnavailable || card.FileActionVisible;
         ToggleVisibility(); bool hidden = !IsVisible;
         ToggleVisibility(); bool shown = IsVisible;
         var startLeft = Left; var startTop = Top;
-        Left += 25; Top += 25;
-        settings.Left = Left; settings.Top = Top; SaveSettings();
+        var startPosition = PointToScreen(new Point());
+        dragStart = (startPosition + new Vector(10, 10), startPosition);
+        MoveDragTo(startPosition + new Vector(35, 35));
+        CompleteDrag();
         var persisted = Settings.Load(directory);
-        bool moved = Math.Abs(persisted.Left!.Value - Left) < 1 && Math.Abs(persisted.Top!.Value - Top) < 1;
+        bool moved = PointToScreen(new Point()) == startPosition + new Vector(25, 25) &&
+            persisted.Left == Left && persisted.Top == Top && Left != startLeft && Top != startTop;
+        var movedBounds = WindowBounds();
+        ToggleLock();
+        moved &= movedBounds == WindowBounds();
+        if (!initialLock) ToggleLock();
         Left = startLeft; Top = startTop; settings.Left = Left; settings.Top = Top;
-        if (initialLock) ToggleLock();
         var originalSettings = settings.Copy();
         var custom = settings.Copy();
         custom.PollIntervalMilliseconds = 250; custom.RewardRefreshMinutes = 3;
@@ -521,9 +558,17 @@ public sealed class OverlayWindow : Window
         bool unavailableRetained = card.ShowsUnavailableMessage();
         lastDisplay = null;
         ApplySettings(originalSettings);
-        var report = new { HotkeysRegistered = hotkeys?.RegisteredCount, LockedClickThrough = locked, UnlockedMouse = unlocked, HideWorks = hidden, ShowWorks = shown, PositionPersists = moved, MissingFileActionAvailable = missingFileAction, CustomSettingsAccepted = applyError is null, UpdateIntervalsApplied = intervalsApplied, CustomFontAppliedToTextAndNumbers = fontApplied, TypographyOverridesApplied = typographyApplied, InformationHiddenIndependently = fieldsHidden, UnavailableMessageRetained = unavailableRetained, Display = lastDisplay };
+        OpenSettings();
+        bool displayReorders = settingsWindow!.SmokeTestDisplayReorder();
+        var report = new { HotkeysRegistered = hotkeys?.RegisteredCount, LockedClickThrough = locked, UnlockedMouse = unlocked, RewardDragBoundsMatch = rewardDragBoundsMatch, UnavailableDragBoundsMatch = unavailableDragBoundsMatch, HideWorks = hidden, ShowWorks = shown, PositionPersists = moved, DisplayReorders = displayReorders, MissingFileActionAvailable = missingFileAction, CustomSettingsAccepted = applyError is null, UpdateIntervalsApplied = intervalsApplied, CustomFontAppliedToTextAndNumbers = fontApplied, TypographyOverridesApplied = typographyApplied, InformationHiddenIndependently = fieldsHidden, UnavailableMessageRetained = unavailableRetained, Display = lastDisplay };
         File.WriteAllText(output, System.Text.Json.JsonSerializer.Serialize(report, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
         SaveVisual(card.Element, Path.ChangeExtension(output, ".png"), new Size(double.PositiveInfinity, double.PositiveInfinity));
         Quit();
+
+        Rect WindowBounds()
+        {
+            UpdateLayout();
+            return new Rect(PointToScreen(new Point()), PointToScreen(new Point(ActualWidth, ActualHeight)));
+        }
     }
 }

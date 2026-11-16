@@ -5,8 +5,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
-using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
@@ -14,6 +12,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Shell;
 
@@ -21,29 +20,52 @@ namespace FysZeRewardOverlay;
 
 public sealed class SettingsWindow : Window
 {
+    private const string GlobalTextLabel = "全局配置";
+    private const string UseGlobalTextLabel = OverlayTextStyle.UseGlobalLabel;
+    private const string UseDefaultTextLabel = "使用默认样式";
     private readonly RadioButton txtSource;
     private readonly RadioButton gsiSource;
+    private readonly TextBlock mapSourceHint = OverlayWindow.Text("", 12, "#A1A1AA");
+    private readonly TextBlock gsiConfigLabel = OverlayWindow.Text("", 13, "#E6E6EB", true);
+    private readonly TextBlock broadcastPathLabel = OverlayWindow.Text("", 13, "#E6E6EB", true);
+    private readonly StackPanel gsiStageControls = new();
     private readonly CheckBox isSvip = new();
+    private readonly CheckBox useNativeDamage = new()
+    {
+        Tag = "击杀估算", Content = "原生伤害", IsEnabled = Settings.NativeDamageEnabled
+    };
+    private readonly TextBlock roundDamageStatus = OverlayWindow.Text("GSI 本回合伤害 · 等待 GSI 推送", 11, "#A1A1AA");
     private readonly TextBox path = new();
     private readonly TextBlock pathStatus = OverlayWindow.Text("", 11, "#A1A1AA");
     private readonly TextBox pollSeconds = new();
     private readonly TextBox rewardMinutes = new();
+    private readonly CheckBox autoUpdate = new() { Tag = "关闭", Content = "开启" };
+    private readonly TextBox autoUpdateDays = new();
+    private int aboutPageIndex;
+    internal AppUpdates? Updates { get; init; }
     private readonly ComboBox fonts = new();
+    private readonly ComboBox textTargets = new() { Width = 224, MaxDropDownHeight = 300, SelectedValuePath = nameof(Tag) };
     private readonly TextBox textSize = new();
+    private readonly TextBlock textSizePlaceholder = OverlayWindow.Text("", 12, "#A1A1AA");
     private readonly TextBox textColor = new();
+    private readonly ComboBox textWeight = new() { Width = 150, MaxDropDownHeight = 300 };
     private readonly Dictionary<OverlayField, TextStyleDraft> styleDrafts = new();
-    private readonly Dictionary<OverlayField, RadioButton> targetButtons = new();
     private readonly Dictionary<string, RadioButton> swatches = new();
-    private readonly RadioButton[] weights = new RadioButton[OverlayTextStyle.Weights.Length];
+    private Button resetTextSize = null!;
+    private Button resetTextColor = null!;
     private OverlayField textTarget;
     private bool loadingTextStyle;
     private readonly Dictionary<OverlayField, CheckBox> displayFields = new();
-    private readonly StackPanel displayRows = new() { AllowDrop = true, Background = Brushes.Transparent };
+    private readonly StackPanel displayRows = new() { Background = Brushes.Transparent };
     private readonly Dictionary<OverlayField, Grid> sortableRows = new();
-    private readonly Border displayDropLine = new()
+    private readonly Border displayDropSlot = new()
     {
-        Height = 2, Background = OverlayWindow.Brush("#0078D4"), IsHitTestVisible = false
+        Background = OverlayWindow.Brush("#202F40"), BorderBrush = OverlayWindow.Brush("#349CFF"),
+        BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(7), Visibility = Visibility.Collapsed,
+        VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false, RenderTransform = new TranslateTransform()
     };
+    private Grid? draggedDisplayRow;
+    private int displayDragTarget = -1;
     private readonly CheckBox obsEnabled = new() { Content = "启用 OBS 浏览器源" };
     private readonly TextBlock obsStatus = OverlayWindow.Text("", 12, "#A1A1AA");
     private readonly TextBox obsUrl = new() { Text = ObsBrowserSource.Url, IsReadOnly = true };
@@ -52,6 +74,13 @@ public sealed class SettingsWindow : Window
     private readonly List<(RadioButton Button, ScrollViewer Page)> pages = new();
     private readonly StackPanel navigation = new();
     private readonly StackPanel sidebarFooter = new();
+    private readonly Grid sidebarBody = new() { ClipToBounds = true };
+    private readonly TranslateTransform navigationHoverOffset = new();
+    private readonly Border navigationHover = new()
+    {
+        Background = OverlayWindow.Brush("#28282C"), CornerRadius = new CornerRadius(7), Opacity = 0,
+        VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false
+    };
     private readonly TextBlock gsiStatus = OverlayWindow.Text("GSI · 等待启动", 11, "#A1A1AA");
     private readonly ContentControl pageHost = new()
     {
@@ -116,10 +145,18 @@ public sealed class SettingsWindow : Window
         DockPanel.SetDock(sidebarFooter, Dock.Bottom);
         sidebarContent.Children.Add(sidebarFooter);
         sidebarContent.Children.Add(navigation);
+        navigationHover.RenderTransform = navigationHoverOffset;
+        sidebarBody.Children.Add(navigationHover);
+        sidebarBody.Children.Add(sidebarContent);
+        sidebarBody.SizeChanged += (_, _) =>
+        {
+            if (pages.FirstOrDefault(item => item.Button.IsMouseOver).Button is { } button)
+                MoveNavigationHover(button, animate: false);
+        };
         var sidebar = new Border
         {
             Background = OverlayWindow.Brush("#111112"), BorderBrush = OverlayWindow.Brush("#2B2B2E"),
-            BorderThickness = new Thickness(0, 0, 1, 0), Padding = new Thickness(15, 23, 15, 16), Child = sidebarContent
+            BorderThickness = new Thickness(0, 0, 1, 0), Padding = new Thickness(15, 23, 15, 16), Child = sidebarBody
         };
         Grid.SetRowSpan(sidebar, 2);
         root.Children.Add(sidebar);
@@ -168,11 +205,22 @@ public sealed class SettingsWindow : Window
         root.Children.Add(caption);
 
         var panel = AddPage("数据与文件", "\uE8A5");
-        Label(panel, "地图来源");
-        txtSource = CreateSourceRow(BroadcastFiles.DisplayName);
-        gsiSource = CreateSourceRow("CS2 GSI");
-        panel.Children.Add(gsiSource);
+        var sourceLabel = Label(panel, "地图与关卡来源");
+        txtSource = CreateSourceOption(BroadcastFiles.DisplayName);
+        gsiSource = CreateSourceOption("CS2 GSI");
+        gsiSource.Margin = new Thickness(0, 0, 4, 0);
+        txtSource.Margin = new Thickness(4, 0, 0, 0);
+        var sourceOptions = new System.Windows.Controls.Primitives.UniformGrid { Rows = 1 };
+        sourceOptions.Children.Add(gsiSource);
+        sourceOptions.Children.Add(txtSource);
+        AutomationProperties.SetLabeledBy(sourceOptions, sourceLabel);
+        panel.Children.Add(sourceOptions);
+        mapSourceHint.TextWrapping = TextWrapping.Wrap;
+        mapSourceHint.Margin = new Thickness(0, 8, 0, 16);
+        panel.Children.Add(mapSourceHint);
         var gsiPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 8) };
+        gsiConfigLabel.Margin = new Thickness(0, 0, 0, 8);
+        gsiPanel.Children.Add(gsiConfigLabel);
         var gsiActions = new WrapPanel();
         var autoConfig = Button("自动配置", null, true);
         var gsiConfigStatus = OverlayWindow.Text("", 11, "#A1A1AA");
@@ -191,20 +239,17 @@ public sealed class SettingsWindow : Window
         {
             adjustments.Children.Add(Button("减少关卡计数", () => adjustStage(-1), false));
             adjustments.Children.Add(Button("增加关卡计数", () => adjustStage(1), false));
-            var stageControls = new StackPanel();
-            stageControls.Children.Add(adjustments);
-            stageControls.Children.Add(inferredStage);
-            gsiPanel.Children.Add(stageControls);
-            void UpdateStageControls() => stageControls.Visibility = UsesGsi ? Visibility.Visible : Visibility.Collapsed;
-            gsiSource.Checked += (_, _) => UpdateStageControls();
-            txtSource.Checked += (_, _) => UpdateStageControls();
-            UpdateStageControls();
+            gsiStageControls.Children.Add(adjustments);
+            gsiStageControls.Children.Add(inferredStage);
+            gsiPanel.Children.Add(gsiStageControls);
             inferredStage.IsEnabledChanged += (_, _) => adjustments.IsEnabled = inferredStage.IsEnabled;
             inferredStage.IsEnabled = false;
         }
         panel.Children.Add(gsiPanel);
-        panel.Children.Add(txtSource);
+        broadcastPathLabel.Margin = new Thickness(0, 4, 0, 8);
+        panel.Children.Add(broadcastPathLabel);
         StyleTextBox(path);
+        AutomationProperties.SetLabeledBy(path, broadcastPathLabel);
         path.ToolTip = "可手动填写完整路径或 %LOCALAPPDATA% 等环境变量，只读此文件。";
         path.TextChanged += (_, _) => UpdatePathStatus();
         panel.Children.Add(path);
@@ -222,19 +267,17 @@ public sealed class SettingsWindow : Window
         panel.Children.Add(pathStatus);
         txtSource.Checked += (_, _) => OnMapSourceChanged();
         gsiSource.Checked += (_, _) => OnMapSourceChanged();
-        var groupRow = new DockPanel { Margin = new Thickness(0, 0, 0, 16) };
-        isSvip.Style = (Style)FindResource("LabeledSwitch");
-        AutomationProperties.SetName(isSvip, "是否为SVIP");
-        isSvip.VerticalAlignment = VerticalAlignment.Center;
-        isSvip.Checked += (_, _) => UpdatePreview();
-        isSvip.Unchecked += (_, _) => UpdatePreview();
-        DockPanel.SetDock(isSvip, Dock.Right);
-        groupRow.Children.Add(isSvip);
-        groupRow.Children.Add(OverlayWindow.Text("是否为SVIP", 13, "#E6E6EB", true));
-        panel.Children.Add(groupRow);
+        panel.Children.Add(CreateSwitchRow("是否为SVIP", isSvip, new Thickness(0, 0, 0, 8)));
+        var damageRow = CreateSwitchRow("伤害计算（原生伤害暂不可用）", useNativeDamage, new Thickness(0, 0, 0, 3));
+        ToolTipService.SetShowOnDisabled(useNativeDamage, true);
+        useNativeDamage.ToolTip = "当前使用 GSI 击杀数估算伤害，每次击杀按 1,000 伤害计算。";
+        panel.Children.Add(damageRow);
+        roundDamageStatus.Margin = new Thickness(0, 0, 0, 16);
+        AutomationProperties.SetName(roundDamageStatus, "当前回合原生伤害");
+        panel.Children.Add(roundDamageStatus);
         Label(panel, "数据更新频率");
         AddNumber(panel, "地图 / 关卡读取", pollSeconds, "秒（0.2～60）");
-        AddNumber(panel, "奖励联网更新", rewardMinutes, "分钟（1～1440）");
+        AddNumber(panel, "奖励联网更新", rewardMinutes, $"分钟（1～{Settings.MaxRewardRefreshMinutes}）");
         Note(panel, "读取间隔越短，切图和关卡变化显示越快。奖励更新间隔控制联网查询频率；断网后每 30 秒重试。");
         panel.Children.Add(Button("立即更新奖励", () => { refresh(); SetError("已请求更新奖励。"); }, false));
         Note(panel, "在 FYS 助手的直播中心 → 直播助手 → 显示内容中勾选“地图”和“关卡”。叠层文本生成后会自动读取。");
@@ -276,6 +319,9 @@ public sealed class SettingsWindow : Window
         Label(panel, "开启要在悬浮窗中显示的项目");
         Note(panel, "按住左侧的拖动柄上下移动，调整悬浮窗和 OBS 的显示顺序。");
         var visibilityStyle = (Style)FindResource("VisibilitySwitch");
+        var displayList = new Grid();
+        displayList.Children.Add(displayDropSlot);
+        displayList.Children.Add(displayRows);
         foreach (var (field, label) in OverlayOptions.Fields)
         {
             var check = new CheckBox { Content = label, Style = visibilityStyle };
@@ -283,15 +329,19 @@ public sealed class SettingsWindow : Window
             if (!OverlayOptions.ReorderableFields.Contains(field)) panel.Children.Add(check);
             else
             {
-                if (displayRows.Parent is null) panel.Children.Add(displayRows);
+                if (displayList.Parent is null) panel.Children.Add(displayList);
                 var row = CreateSortableRow(field, check);
                 sortableRows.Add(field, row);
                 displayRows.Children.Add(row);
             }
         }
-        displayRows.DragOver += OnDisplayDragOver;
-        displayRows.DragLeave += (_, _) => ClearDisplayDropLine();
-        displayRows.Drop += OnDisplayDrop;
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != Key.Escape || draggedDisplayRow is null) return;
+            FinishDisplayDrag(commit: false);
+            Mouse.Capture(null);
+            e.Handled = true;
+        };
         var showButtons = new WrapPanel { Margin = new Thickness(0, 4, 0, 4) };
         showButtons.Children.Add(Button("显示全部", () => { foreach (var check in displayFields.Values) check.IsChecked = true; }, false));
         showButtons.Children.Add(Button("仅显示四项奖励", () =>
@@ -299,7 +349,7 @@ public sealed class SettingsWindow : Window
             foreach (var entry in displayFields) entry.Value.IsChecked = (entry.Key & (OverlayField.RankPasses | OverlayField.RankDamage | OverlayField.EconPasses | OverlayField.EconDamage)) != 0;
         }, false));
         panel.Children.Add(showButtons);
-        Note(panel, "“当前无法获取该地图信息”仍会显示。拖动模式临时显示操作标题和提示，方便重新调整。");
+        Note(panel, "“当前无法获取该地图信息”仍会显示。拖动模式下可右键悬浮窗打开操作菜单。");
 
         panel = AddPage("快捷键", "\uE765");
         Label(panel, "全局快捷键");
@@ -434,7 +484,8 @@ public sealed class SettingsWindow : Window
 
     private Grid CreateSortableRow(OverlayField field, CheckBox check)
     {
-        var row = new Grid { Tag = field };
+        var row = new Grid { Tag = field, RenderTransform = new TranslateTransform() };
+        var background = new Border { CornerRadius = new CornerRadius(7), IsHitTestVisible = false };
         var layout = new DockPanel();
         var grip = new TextBlock
         {
@@ -443,77 +494,151 @@ public sealed class SettingsWindow : Window
             TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             ToolTip = "拖动排序 · " + check.Content
         };
-        Point start = default;
+        double startY = 0;
+        double grabOffset = 0;
         grip.PreviewMouseLeftButtonDown += (_, e) =>
         {
-            start = e.GetPosition(displayRows);
-            grip.CaptureMouse();
+            startY = e.GetPosition(displayRows).Y;
+            grabOffset = e.GetPosition(row).Y;
+            e.Handled = grip.CaptureMouse();
+        };
+        grip.PreviewMouseLeftButtonUp += (_, e) =>
+        {
+            if (!grip.IsMouseCaptured) return;
+            var point = e.GetPosition(displayRows);
+            if (draggedDisplayRow == row) MoveDisplayRow(row, point.Y - grabOffset);
+            var hit = InputHitTest(e.GetPosition(this)) as DependencyObject;
+            FinishDisplayDrag(new Rect(displayRows.RenderSize).Contains(point) &&
+                hit is not null && (hit == displayRows || displayRows.IsAncestorOf(hit)));
+            grip.ReleaseMouseCapture();
             e.Handled = true;
         };
-        grip.PreviewMouseLeftButtonUp += (_, _) => grip.ReleaseMouseCapture();
+        grip.LostMouseCapture += (_, _) => { if (draggedDisplayRow == row) FinishDisplayDrag(commit: false); };
         grip.MouseMove += (_, e) =>
         {
             if (!grip.IsMouseCaptured || e.LeftButton != MouseButtonState.Pressed) return;
-            var delta = e.GetPosition(displayRows) - start;
-            if (Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance &&
-                Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance) return;
-            grip.ReleaseMouseCapture();
-            try { DragDrop.DoDragDrop(grip, new DataObject(typeof(Grid), row), DragDropEffects.Move); }
-            finally { ClearDisplayDropLine(); }
+            double y = e.GetPosition(displayRows).Y;
+            if (draggedDisplayRow is null)
+            {
+                if (Math.Abs(y - startY) < SystemParameters.MinimumVerticalDragDistance) return;
+                BeginDisplayDrag(row);
+            }
+            MoveDisplayRow(row, y - grabOffset);
         };
         DockPanel.SetDock(grip, Dock.Left);
         layout.Children.Add(grip);
         layout.Children.Add(check);
+        row.Children.Add(background);
         row.Children.Add(layout);
         return row;
     }
 
-    private int DisplayDropIndex(Point position)
+    private void BeginDisplayDrag(Grid row)
     {
-        var children = displayRows.Children;
-        for (int i = 0; i < children.Count; i++)
-        {
-            var row = (Grid)children[i];
-            if (position.Y < row.TranslatePoint(new Point(0, row.ActualHeight / 2), displayRows).Y) return i;
-        }
-        return children.Count;
+        draggedDisplayRow = row;
+        Panel.SetZIndex(row, 1);
+        ((Border)row.Children[0]).Background = OverlayWindow.Brush("#303945");
+        displayDropSlot.Height = row.ActualHeight;
     }
 
-    private void OnDisplayDragOver(object sender, DragEventArgs e)
+    private void MoveDisplayRow(Grid row, double top)
     {
-        e.Handled = true;
-        e.Effects = DragDropEffects.None;
-        ClearDisplayDropLine();
-        if (e.Data.GetData(typeof(Grid)) is not Grid row || !displayRows.Children.Contains(row)) return;
-        e.Effects = DragDropEffects.Move;
-        int index = DisplayDropIndex(e.GetPosition(displayRows));
-        int currentIndex = displayRows.Children.IndexOf(row);
-        if (index == currentIndex || index == currentIndex + 1) return;
-        bool atEnd = index == displayRows.Children.Count;
-        var target = (Grid)displayRows.Children[atEnd ? index - 1 : index];
-        displayDropLine.VerticalAlignment = atEnd ? VerticalAlignment.Bottom : VerticalAlignment.Top;
-        target.Children.Add(displayDropLine);
-    }
-
-    private void ClearDisplayDropLine()
-    {
-        if (displayDropLine.Parent is Grid parent) parent.Children.Remove(displayDropLine);
-    }
-
-    private void OnDisplayDrop(object sender, DragEventArgs e)
-    {
-        ClearDisplayDropLine();
-        if (e.Data.GetData(typeof(Grid)) is not Grid row || !displayRows.Children.Contains(row)) return;
-        e.Handled = true;
-        e.Effects = DragDropEffects.Move;
         var children = displayRows.Children;
         int from = children.IndexOf(row);
-        int to = DisplayDropIndex(e.GetPosition(displayRows));
-        if (to > from) to--;
-        if (from == to) return;
-        children.RemoveAt(from);
-        children.Insert(to, row);
+        double height = row.ActualHeight;
+        double bottom = Math.Max(0, displayRows.ActualHeight - height);
+        top = Math.Clamp(top, 0, bottom);
+        SetDisplayRowOffset(row, top - VisualTreeHelper.GetOffset(row).Y, animate: false);
+
+        int target = 0;
+        double center = top + height / 2;
+        if (top >= bottom) target = children.Count - 1;
+        else if (top > 0)
+        {
+            for (int i = 0; i < children.Count; i++)
+            {
+                if (i == from) continue;
+                var other = (Grid)children[i];
+                if (center < VisualTreeHelper.GetOffset(other).Y + other.ActualHeight / 2) break;
+                target++;
+            }
+        }
+        if (target == displayDragTarget) return;
+        displayDragTarget = target;
+
+        for (int i = 0; i < children.Count; i++)
+        {
+            if (i == from) continue;
+            double offset = from < i && i <= target ? -height : target <= i && i < from ? height : 0;
+            SetDisplayRowOffset((Grid)children[i], offset, animate: true);
+        }
+        var targetRow = (Grid)children[target];
+        double slotTop = VisualTreeHelper.GetOffset(targetRow).Y;
+        if (target > from) slotTop += targetRow.ActualHeight - height;
+        var slotOffset = (TranslateTransform)displayDropSlot.RenderTransform;
+        AnimateValue(slotOffset, TranslateTransform.YProperty, slotTop, 150,
+            displayDropSlot.Visibility == Visibility.Visible && SystemParameters.ClientAreaAnimation);
+        displayDropSlot.Visibility = Visibility.Visible;
+    }
+
+    private static void SetDisplayRowOffset(Grid row, double offset, bool animate) =>
+        AnimateValue(row.RenderTransform, TranslateTransform.YProperty, offset, 150,
+            animate && SystemParameters.ClientAreaAnimation);
+
+    private void FinishDisplayDrag(bool commit)
+    {
+        if (draggedDisplayRow is not { } row) return;
+        int target = displayDragTarget;
+        draggedDisplayRow = null;
+        displayDragTarget = -1;
+        displayDropSlot.Visibility = Visibility.Collapsed;
+        ((Border)row.Children[0]).Background = null;
+        Panel.SetZIndex(row, 0);
+
+        var children = displayRows.Children;
+        if (!commit || target < 0 || target == children.IndexOf(row))
+        {
+            foreach (Grid item in children) SetDisplayRowOffset(item, 0, animate: true);
+            return;
+        }
+
+        var visiblePositions = children.Cast<Grid>().ToDictionary(item => item,
+            item => VisualTreeHelper.GetOffset(item).Y + ((TranslateTransform)item.RenderTransform).Y);
+        children.Remove(row);
+        children.Insert(target, row);
+        displayRows.UpdateLayout();
+        foreach (Grid item in children)
+        {
+            SetDisplayRowOffset(item, visiblePositions[item] - VisualTreeHelper.GetOffset(item).Y, animate: false);
+            SetDisplayRowOffset(item, 0, animate: true);
+        }
         UpdatePreview();
+    }
+
+    internal bool SmokeTestDisplayReorder()
+    {
+        SelectPage(2);
+        UpdateLayout();
+        var children = displayRows.Children;
+        var first = (Grid)children[0];
+        var second = (Grid)children[1];
+        var last = (Grid)children[children.Count - 1];
+        if (first.ActualHeight <= 0) return false;
+
+        BeginDisplayDrag(first);
+        MoveDisplayRow(first, displayRows.ActualHeight);
+        var shift = (TranslateTransform)second.RenderTransform;
+        bool previewed = displayDropSlot.Visibility == Visibility.Visible && displayDragTarget == children.Count - 1 &&
+            Equals(shift.GetAnimationBaseValue(TranslateTransform.YProperty), -first.ActualHeight) &&
+            (!SystemParameters.ClientAreaAnimation || shift.HasAnimatedProperties);
+        FinishDisplayDrag(commit: true);
+        var changedOrder = ReadAppearance().DisplayOrder;
+        BeginDisplayDrag(last);
+        MoveDisplayRow(last, 0);
+        bool movesUp = displayDragTarget == 0;
+        FinishDisplayDrag(commit: false);
+        return previewed && movesUp && changedOrder[0] == (OverlayField)second.Tag &&
+            changedOrder[^1] == (OverlayField)first.Tag && changedOrder.SequenceEqual(ReadAppearance().DisplayOrder);
     }
 
     private void LoadEditor(Settings next)
@@ -522,9 +647,13 @@ public sealed class SettingsWindow : Window
         txtSource.IsChecked = next.MapSource == MapSource.Broadcast;
         gsiSource.IsChecked = next.MapSource == MapSource.Gsi;
         isSvip.IsChecked = next.IsSvip;
+        useNativeDamage.IsChecked = next.UseNativeDamage;
         path.Text = next.BroadcastPath;
         pollSeconds.Text = (next.PollIntervalMilliseconds / 1000d).ToString("0.###", CultureInfo.CurrentCulture);
         rewardMinutes.Text = next.RewardRefreshMinutes.ToString(CultureInfo.CurrentCulture);
+        autoUpdate.IsChecked = next.AutoUpdateDays > 0;
+        autoUpdateDays.Text = (next.AutoUpdateDays > 0 ? next.AutoUpdateDays : Settings.DefaultAutoUpdateDays).ToString(CultureInfo.CurrentCulture);
+        autoUpdateDays.IsEnabled = autoUpdate.IsChecked == true;
         obsEnabled.IsChecked = next.ObsEnabled;
         var hotkeys = next.Hotkeys;
         for (int i = 0; i < shortcuts.Length; i++) shortcuts[i].Text = hotkeys[i];
@@ -547,25 +676,20 @@ public sealed class SettingsWindow : Window
 
     private void AddAboutPage()
     {
+        aboutPageIndex = pages.Count;
         var panel = AddPage("关于", "\uE946", sidebarFooter);
-        var assembly = typeof(SettingsWindow).Assembly;
-        var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
-            ?? assembly.GetName().Version?.ToString() ?? "";
-        var repository = assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
-            .FirstOrDefault(metadata => metadata.Key == "RepositoryUrl")?.Value
-            ?? "https://github.com/creeper-kk/fys-ze-reward-overlay";
+        var repository = ReleaseCheck.Repository;
 
         Label(panel, "ZE 奖励悬浮窗");
-        Note(panel, "版本 " + version);
+        Note(panel, "版本 v" + ReleaseCheck.LocalVersion);
         Note(panel, "作者 creeper_kk");
-        var updateActions = new WrapPanel();
+        panel.Children.Add(CreateSwitchRow("自动更新", autoUpdate, new Thickness(0, 0, 0, 8)));
+        AddNumber(panel, "检查间隔", autoUpdateDays, $"天（1～{Settings.MaxAutoUpdateDays}）");
+        autoUpdate.Checked += (_, _) => autoUpdateDays.IsEnabled = true;
+        autoUpdate.Unchecked += (_, _) => autoUpdateDays.IsEnabled = false;
+        Note(panel, "自动下载的版本会在下次启动时启用。关闭后永不自动检查或下载更新。");
         var check = Button("检查更新", null, true);
-        string releasePage = "";
-        var openRelease = Button("打开 Release 页面", () => OpenLink(releasePage), false);
-        openRelease.Visibility = Visibility.Collapsed;
-        updateActions.Children.Add(check);
-        updateActions.Children.Add(openRelease);
-        panel.Children.Add(updateActions);
+        panel.Children.Add(check);
         var updateStatus = OverlayWindow.Text("", 12, "#A1A1AA");
         updateStatus.TextWrapping = TextWrapping.Wrap;
         updateStatus.Margin = new Thickness(0, 10, 0, 12);
@@ -573,31 +697,19 @@ public sealed class SettingsWindow : Window
         panel.Children.Add(updateStatus);
         check.Click += async (_, _) =>
         {
+            if (Updates is null)
+            {
+                updateStatus.Text = "当前运行模式暂不可用。";
+                return;
+            }
             check.IsEnabled = false;
-            openRelease.Visibility = Visibility.Collapsed;
-            updateStatus.Foreground = OverlayWindow.Brush("#A1A1AA");
-            updateStatus.Text = "正在检查更新…";
             try
             {
-                var release = await ReleaseCheck.GetLatestAsync(repository, version);
-                releasePage = release.PageUrl;
-                updateStatus.Text = release.Comparison switch
+                await Updates.CheckManuallyAsync((message, failed) =>
                 {
-                    > 0 => $"发现新版本 {release.Tag}，当前版本为 {version}。",
-                    0 => $"已是最新版本 {release.Tag}。",
-                    _ => $"当前版本 {version} 高于已发布版本 {release.Tag}。"
-                };
-                openRelease.Visibility = release.Comparison > 0 ? Visibility.Visible : Visibility.Collapsed;
-            }
-            catch (TaskCanceledException)
-            {
-                updateStatus.Foreground = OverlayWindow.Brush("#FFC2BC");
-                updateStatus.Text = "检查更新超时，请重试。";
-            }
-            catch (Exception ex) when (ex is HttpRequestException or InvalidDataException or IOException or JsonException)
-            {
-                updateStatus.Foreground = OverlayWindow.Brush("#FFC2BC");
-                updateStatus.Text = "检查更新失败：" + ex.Message;
+                    updateStatus.Text = message;
+                    updateStatus.Foreground = OverlayWindow.Brush(failed ? "#FFC2BC" : "#A1A1AA");
+                });
             }
             finally { check.IsEnabled = true; }
         };
@@ -616,7 +728,7 @@ public sealed class SettingsWindow : Window
         catch (Win32Exception ex) { SetError("无法打开链接：" + ex.Message); }
     }
 
-    internal void UpdateGsiStatus(GsiListener.ConnectionState? state, string error, bool demo)
+    internal void UpdateGsiStatus(GsiListener.ConnectionState? state, int? roundDamage, string error, bool demo)
     {
         var (label, color, detail) = state switch
         {
@@ -632,15 +744,29 @@ public sealed class SettingsWindow : Window
             gsiStatus.Foreground = OverlayWindow.Brush(color);
         }
         gsiStatus.ToolTip = detail.Length > 0 ? detail : null;
+        string damageText = roundDamage is int damage ? damage.ToString("N0", CultureInfo.CurrentCulture)
+            : state == GsiListener.ConnectionState.Receiving ? "当前推送未提供" : "等待 GSI 推送";
+        roundDamageStatus.Text = "GSI 本回合伤害 · " + (demo ? "演示模式" : damageText);
     }
 
-    private RadioButton CreateSourceRow(string name)
+    private DockPanel CreateSwitchRow(string label, CheckBox toggle, Thickness margin)
     {
-        var option = Option(name, "MapSource");
-        option.HorizontalContentAlignment = HorizontalAlignment.Left;
-        option.Margin = new Thickness(0, 0, 0, 8);
-        return option;
+        var row = new DockPanel { Margin = margin };
+        toggle.Style = (Style)FindResource("LabeledSwitch");
+        toggle.VerticalAlignment = VerticalAlignment.Center;
+        AutomationProperties.SetName(toggle, label);
+        toggle.Checked += (_, _) => UpdatePreview();
+        toggle.Unchecked += (_, _) => UpdatePreview();
+        DockPanel.SetDock(toggle, Dock.Right);
+        row.Children.Add(toggle);
+        row.Children.Add(OverlayWindow.Text(label, 13, "#E6E6EB", true));
+        return row;
     }
+
+    private RadioButton CreateSourceOption(string name) => new()
+    {
+        Content = name, GroupName = "MapSource", Style = (Style)FindResource("MapSourceOption")
+    };
 
     internal void UpdateInferredStage(Broadcast broadcast, RewardData? data, int offset)
     {
@@ -705,21 +831,27 @@ public sealed class SettingsWindow : Window
     private void BuildTextStyleEditor(StackPanel panel)
     {
         Section(panel, "文字样式");
-        Label(panel, "应用到");
-        var targets = new WrapPanel();
-        AddTarget(OverlayField.None, "全局文字");
-        foreach (var entry in OverlayTypography.Labels) AddTarget(entry.Key, entry.Value);
-        panel.Children.Add(targets);
+        textTargets.MinHeight = 34;
+        textTargets.Items.Add(new ComboBoxItem { Tag = OverlayField.None, Content = GlobalTextLabel });
+        foreach (var (field, name) in OverlayTypography.Labels)
+            textTargets.Items.Add(new ComboBoxItem { Tag = field, Content = name });
+        AutomationProperties.SetName(textTargets, "应用到");
+        textTargets.SelectionChanged += (_, _) =>
+        {
+            if (textTargets.SelectedValue is OverlayField field) SelectTextTarget(field);
+        };
+        AddTextStyleRow(panel, "应用到", textTargets);
 
-        Note(panel, "单项未设置的属性沿用全局。全局未设置时使用默认样式。");
-
-        Label(panel, "字号  8–64");
-        var sizeRow = new WrapPanel { Margin = new Thickness(0, 0, 0, 14) };
-        sizeRow.Children.Add(Button("A−", () => AdjustSize(-1), false));
+        var decrease = Button("A−", () => AdjustSize(-1), false);
+        var increase = Button("A＋", () => AdjustSize(1), false);
+        decrease.Padding = increase.Padding = new Thickness(6, 4, 6, 4);
+        AutomationProperties.SetName(decrease, "减小字号");
+        AutomationProperties.SetName(increase, "增大字号");
         StyleTextBox(textSize);
-        textSize.Width = 68;
+        textSize.Width = 58;
+        textSize.ToolTip = $"字号 {OverlayTextStyle.MinSize}～{OverlayTextStyle.MaxSize}";
         textSize.HorizontalContentAlignment = HorizontalAlignment.Center;
-        System.Windows.Automation.AutomationProperties.SetName(textSize, "字号");
+        AutomationProperties.SetName(textSize, "字号");
         textSize.PreviewKeyDown += (_, e) =>
         {
             if (e.Key is not (Key.Up or Key.Down)) return;
@@ -727,20 +859,32 @@ public sealed class SettingsWindow : Window
             e.Handled = true;
         };
         var sizeInput = new Grid { Margin = new Thickness(0, 0, 8, 0) };
-        var sizePlaceholder = OverlayWindow.Text("沿用", 12, "#A1A1AA");
-        sizePlaceholder.HorizontalAlignment = HorizontalAlignment.Center;
-        sizePlaceholder.IsHitTestVisible = false;
+        textSizePlaceholder.HorizontalAlignment = HorizontalAlignment.Center;
+        textSizePlaceholder.IsHitTestVisible = false;
         sizeInput.Children.Add(textSize);
-        sizeInput.Children.Add(sizePlaceholder);
-        sizeRow.Children.Add(sizeInput);
-        sizeRow.Children.Add(Button("A＋", () => AdjustSize(1), false));
-        var resetSize = Button("沿用", () => textSize.Text = "", false);
-        resetSize.ToolTip = "清除字号覆盖";
-        sizeRow.Children.Add(resetSize);
-        panel.Children.Add(sizeRow);
+        sizeInput.Children.Add(textSizePlaceholder);
+        resetTextSize = Button(UseGlobalTextLabel, () => textSize.Text = "", false);
+        resetTextSize.Margin = new Thickness(0);
+        resetTextSize.Padding = new Thickness(8, 6, 8, 6);
+        AddTextStyleRow(panel, "字号", decrease, sizeInput, increase, resetTextSize);
 
-        Label(panel, "文字颜色");
-        var palette = new WrapPanel { Margin = new Thickness(0, 0, 0, 14) };
+        StyleTextBox(textColor);
+        textColor.Width = 80;
+        textColor.ToolTip = "#RRGGBB";
+        AutomationProperties.SetName(textColor, "自定义十六进制颜色");
+        var colorInput = new Grid { Margin = new Thickness(0, 0, 8, 0) };
+        var colorPlaceholder = OverlayWindow.Text("#RRGGBB", 11, "#A1A1AA");
+        colorPlaceholder.HorizontalAlignment = HorizontalAlignment.Center;
+        colorPlaceholder.IsHitTestVisible = false;
+        colorInput.Children.Add(textColor);
+        colorInput.Children.Add(colorPlaceholder);
+        resetTextColor = Button(UseGlobalTextLabel, () => textColor.Text = "", false);
+        resetTextColor.Margin = new Thickness(0);
+        resetTextColor.Padding = resetTextSize.Padding;
+        var pickColor = Button("选色…", PickTextColor, false);
+        pickColor.Padding = resetTextColor.Padding;
+        AddTextStyleRow(panel, "文字颜色", colorInput, pickColor, resetTextColor);
+        var palette = new WrapPanel { Margin = new Thickness(0, 0, 0, 12) };
         (string Color, string Name, bool DarkMark)[] colors =
         {
             ("#FFFFFF", "白色", true), ("#39A7E5", "蓝色", true), ("#32BDB7", "青色", true),
@@ -753,81 +897,86 @@ public sealed class SettingsWindow : Window
             {
                 Style = (Style)FindResource("Swatch"), GroupName = "TextColor", Background = OverlayWindow.Brush(color),
                 Foreground = darkMark ? Brushes.Black : Brushes.White, ToolTip = name + " " + color,
-                Margin = new Thickness(0, 0, 6, 6)
+                Margin = new Thickness(0, 0, 5, 6)
             };
-            System.Windows.Automation.AutomationProperties.SetName(swatch, name + " " + color);
+            AutomationProperties.SetName(swatch, name + " " + color);
             swatch.Click += (_, _) => textColor.Text = color;
             swatches.Add(color, swatch);
             palette.Children.Add(swatch);
         }
-        var inheritColor = Option("沿用", "TextColor");
-        inheritColor.ToolTip = "清除颜色覆盖";
-        inheritColor.Click += (_, _) => textColor.Text = "";
-        swatches.Add("", inheritColor);
-        palette.Children.Add(inheritColor);
-        var customColor = Button("选色…", PickTextColor, false);
-        palette.Children.Add(customColor);
-        StyleTextBox(textColor);
-        textColor.Width = 94;
-        textColor.ToolTip = "#RRGGBB";
-        textColor.Margin = new Thickness(0, 0, 0, 6);
-        System.Windows.Automation.AutomationProperties.SetName(textColor, "自定义十六进制颜色");
-        palette.Children.Add(textColor);
         panel.Children.Add(palette);
 
-        Label(panel, "字重");
-        var weightRow = new WrapPanel { Margin = new Thickness(0, 0, 0, 6) };
-        for (int i = 0; i < OverlayTextStyle.Weights.Length; i++)
+        textWeight.MinHeight = 34;
+        AutomationProperties.SetName(textWeight, "字重");
+        foreach (var (value, name) in OverlayTextStyle.Weights)
         {
-            int index = i;
-            var (value, name) = OverlayTextStyle.Weights[i];
-            var button = Option(name, "TextWeight");
-            button.FontWeight = FontWeight.FromOpenTypeWeight(value ?? 400);
-            button.Click += (_, _) => StoreTextDraft(weightIndex: index);
-            weights[i] = button;
-            weightRow.Children.Add(button);
+            textWeight.Items.Add(new ComboBoxItem
+            {
+                Content = name, FontWeight = FontWeight.FromOpenTypeWeight(value ?? 400)
+            });
         }
-        panel.Children.Add(weightRow);
-        panel.Children.Add(Button("清除所选项样式", () => LoadTextStyle(TextStyleDraft.Empty), false));
+        AddTextStyleRow(panel, "字重", textWeight);
+        var resetStyle = Button("清除所选项样式", () => LoadTextStyle(TextStyleDraft.Empty), false);
+        resetStyle.HorizontalAlignment = HorizontalAlignment.Right;
+        resetStyle.Margin = new Thickness(0);
+        panel.Children.Add(resetStyle);
 
-        textSize.TextChanged += (_, _) =>
+        textSize.TextChanged += (_, _) => StoreTextDraft();
+        textColor.TextChanged += (_, _) =>
         {
-            sizePlaceholder.Visibility = string.IsNullOrEmpty(textSize.Text) ? Visibility.Visible : Visibility.Collapsed;
+            colorPlaceholder.Visibility = string.IsNullOrWhiteSpace(textColor.Text) ? Visibility.Visible : Visibility.Collapsed;
             StoreTextDraft();
         };
-        textColor.TextChanged += (_, _) => StoreTextDraft();
-        void AddTarget(OverlayField field, string name)
-        {
-            var button = Option(name, "TextTarget");
-            button.Click += (_, _) => SelectTextTarget(field);
-            targetButtons.Add(field, button);
-            targets.Children.Add(button);
-        }
+        textWeight.SelectionChanged += (_, _) => StoreTextDraft();
+    }
+
+    private static void AddTextStyleRow(Panel panel, string label, params UIElement[] controls)
+    {
+        var row = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(10, 0, 0, 0) };
+        foreach (var control in controls) actions.Children.Add(control);
+        DockPanel.SetDock(actions, Dock.Right);
+        row.Children.Add(actions);
+        var title = OverlayWindow.Text(label, 13, "#E6E6EB", true);
+        title.TextWrapping = TextWrapping.Wrap;
+        row.Children.Add(title);
+        panel.Children.Add(row);
     }
 
     private void SelectTextTarget(OverlayField field)
     {
+        if (!Equals(textTargets.SelectedValue, field))
+        {
+            textTargets.SelectedValue = field;
+            return;
+        }
         textTarget = field;
-        targetButtons[field].IsChecked = true;
         LoadTextStyle(styleDrafts.GetValueOrDefault(field, TextStyleDraft.Empty));
     }
 
     private void LoadTextStyle(TextStyleDraft draft)
     {
         loadingTextStyle = true;
+        string fallback = textTarget == OverlayField.None ? UseDefaultTextLabel : UseGlobalTextLabel;
+        resetTextSize.Content = resetTextColor.Content = fallback;
+        AutomationProperties.SetName(resetTextSize, "字号 · " + fallback);
+        AutomationProperties.SetName(resetTextColor, "文字颜色 · " + fallback);
+        textWeight.SelectedIndex = -1;
+        ((ComboBoxItem)textWeight.Items[0]).Content = fallback;
+        textWeight.SelectedIndex = draft.WeightIndex;
         textSize.Text = draft.Size;
         textColor.Text = draft.Color;
         loadingTextStyle = false;
-        StoreTextDraft(draft.WeightIndex);
+        StoreTextDraft();
     }
 
-    private void StoreTextDraft(int? weightIndex = null)
+    private void StoreTextDraft()
     {
         if (loadingTextStyle) return;
-        var previous = styleDrafts.GetValueOrDefault(textTarget, TextStyleDraft.Empty);
-        var draft = new TextStyleDraft(textSize.Text, textColor.Text, weightIndex ?? previous.WeightIndex);
+        var draft = new TextStyleDraft(textSize.Text, textColor.Text, Math.Max(0, textWeight.SelectedIndex));
         styleDrafts[textTarget] = draft;
-        weights[draft.WeightIndex].IsChecked = true;
+        textSizePlaceholder.Visibility = string.IsNullOrWhiteSpace(draft.Size) ? Visibility.Visible : Visibility.Collapsed;
+        textSizePlaceholder.Text = textTarget == OverlayField.None ? "默认" : EffectiveTextStyle().Size?.ToString(CultureInfo.CurrentCulture);
         string selected = draft.Color.Trim().ToUpperInvariant();
         foreach (var entry in swatches) entry.Value.IsChecked = entry.Key == selected;
         UpdatePreview();
@@ -861,19 +1010,17 @@ public sealed class SettingsWindow : Window
 
     private void PickTextColor()
     {
-        using var dialog = new System.Windows.Forms.ColorDialog
+        string original = textColor.Text;
+        var initial = (Color)ColorConverter.ConvertFromString(EffectiveTextStyle().Color!);
+        var picker = new TextColorPicker(initial, hex => textColor.Text = hex, (Style)FindResource("SettingsButton"))
         {
-            FullOpen = true,
-            Color = System.Drawing.ColorTranslator.FromHtml(EffectiveTextStyle().Color!)
+            Owner = this, FontFamily = FontFamily
         };
-        var owner = new DialogOwner(new System.Windows.Interop.WindowInteropHelper(this).Handle);
-        if (dialog.ShowDialog(owner) == System.Windows.Forms.DialogResult.OK)
-            textColor.Text = $"#{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}";
-    }
-
-    private sealed class DialogOwner(IntPtr handle) : System.Windows.Forms.IWin32Window
-    {
-        public IntPtr Handle => handle;
+        // Keep the overlay preview to the right of the picker.
+        var origin = editor.TranslatePoint(new Point(), this);
+        picker.Left = Left + origin.X + Math.Max(0, (editor.ActualWidth - picker.Width) / 2);
+        picker.Top = Top + origin.Y + Math.Max(0, (editor.ActualHeight - picker.Height) / 2);
+        textColor.Text = picker.ShowDialog() == true ? picker.SelectedHex : original;
     }
 
     private bool TrySaveTextStyles(Settings next)
@@ -886,7 +1033,7 @@ public sealed class SettingsWindow : Window
             {
                 SelectPage(1);
                 SelectTextTarget(field);
-                string target = field == OverlayField.None ? "全局文字" : OverlayTypography.Labels[field];
+                string target = field == OverlayField.None ? GlobalTextLabel : OverlayTypography.Labels[field];
                 SetError(target + "：" + message);
                 textSize.BringIntoView();
                 return false;
@@ -932,7 +1079,7 @@ public sealed class SettingsWindow : Window
         var pageTitle = OverlayWindow.Text(label, 23, "#F5F5F6", true);
         pageTitle.Margin = new Thickness(0, 0, 0, 22);
         panel.Children.Add(pageTitle);
-        var scroll = new ScrollViewer
+        var scroll = new SmoothScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = panel, CanContentScroll = false
         };
@@ -943,16 +1090,43 @@ public sealed class SettingsWindow : Window
         content.Children.Add(icon);
         content.Children.Add(OverlayWindow.Text(label, 13, "#E8E8EC", true));
         var option = Option(content, "Navigation");
-        option.Background = Brushes.Transparent;
+        option.Style = (Style)FindResource("NavigationOption");
         option.HorizontalContentAlignment = HorizontalAlignment.Left;
         option.MinHeight = 42;
         option.Margin = new Thickness(0, 0, 0, 5);
-        System.Windows.Automation.AutomationProperties.SetName(option, label);
+        AutomationProperties.SetName(option, label);
         int index = pages.Count;
         option.Click += (_, _) => SelectPage(index);
+        option.MouseEnter += (_, _) => MoveNavigationHover(option, animate: true);
+        option.MouseLeave += (_, _) =>
+            AnimateValue(navigationHover, OpacityProperty, 0, 140, SystemParameters.ClientAreaAnimation);
         (navigationHost ?? navigation).Children.Add(option);
         pages.Add((option, scroll));
         return panel;
+    }
+
+    private void MoveNavigationHover(RadioButton button, bool animate)
+    {
+        navigationHover.Height = button.ActualHeight;
+        double top = button.TranslatePoint(new Point(), sidebarBody).Y;
+        animate = animate && SystemParameters.ClientAreaAnimation;
+        AnimateValue(navigationHoverOffset, TranslateTransform.YProperty, top, 170,
+            animate && navigationHover.Opacity > 0.01);
+        AnimateValue(navigationHover, OpacityProperty, 1, 110, animate);
+    }
+
+    private static void AnimateValue(DependencyObject target, DependencyProperty property, double to, int milliseconds, bool animate)
+    {
+        var from = (double)target.GetValue(property);
+        var animation = animate && Math.Abs(from - to) > 0.001
+            ? new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(milliseconds))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop
+            }
+            : null;
+        target.SetValue(property, to);
+        if (target is UIElement element) element.BeginAnimation(property, animation);
+        else ((TranslateTransform)target).BeginAnimation(property, animation);
     }
 
     private void SelectPage(int index)
@@ -998,7 +1172,7 @@ public sealed class SettingsWindow : Window
     private void UpdatePathStatus()
     {
         if (loadingSettings) return;
-        if (UsesGsi && string.IsNullOrWhiteSpace(path.Text)) { pathStatus.Text = "路径留空时按 CT 比分推断关卡。"; return; }
+        if (UsesGsi && string.IsNullOrWhiteSpace(path.Text)) { pathStatus.Text = "未指定文本，关卡由奖励配置或 CT 比分确定。"; return; }
         if (!BroadcastFiles.TryNormalize(path.Text, out var normalized)) { pathStatus.Text = "请填写叠层文本的完整路径，或点击“选择文件”。"; return; }
         var broadcast = BroadcastReader.Read(normalized);
         pathStatus.Text = broadcast.FileUnavailable ? broadcast.Error + "。" : "叠层文本可读取。" + broadcast.Error;
@@ -1009,8 +1183,14 @@ public sealed class SettingsWindow : Window
     private void OnMapSourceChanged()
     {
         if (loadingSettings) return;
-        txtSource.Content = UsesGsi ? BroadcastFiles.DisplayName + "（可选关卡来源）" : BroadcastFiles.DisplayName;
-        if (!UsesGsi && string.IsNullOrWhiteSpace(path.Text)) path.Text = BroadcastFiles.DefaultPath;
+        bool usesGsi = UsesGsi;
+        mapSourceHint.Text = usesGsi
+            ? "地图由 GSI 读取。关卡优先使用匹配的叠层文本，其次使用单关奖励配置或 CT 比分。"
+            : "地图和关卡均从直播助手叠层文本读取。";
+        gsiConfigLabel.Text = usesGsi ? "CS2 GSI 配置" : "CS2 GSI 配置（用于击杀估算）";
+        broadcastPathLabel.Text = usesGsi ? "叠层文本路径（可选，用于读取关卡）" : "叠层文本路径";
+        gsiStageControls.Visibility = usesGsi ? Visibility.Visible : Visibility.Collapsed;
+        if (!usesGsi && string.IsNullOrWhiteSpace(path.Text)) path.Text = BroadcastFiles.DefaultPath;
         UpdatePathStatus();
         UpdatePreview();
     }
@@ -1176,11 +1356,20 @@ public sealed class SettingsWindow : Window
         { SelectPage(0); SetError("请填写" + BroadcastFiles.DisplayName + "的绝对路径。"); return; }
         if (!OverlayOptions.TryIntervals(pollSeconds.Text, rewardMinutes.Text, out int milliseconds, out int minutes, out var validation))
         { SelectPage(0); SetError(validation); return; }
+        int updateDays = 0;
+        if (autoUpdate.IsChecked == true && (!int.TryParse(autoUpdateDays.Text, out updateDays) || updateDays is < 1 or > Settings.MaxAutoUpdateDays))
+        {
+            SelectPage(aboutPageIndex);
+            SetError($"自动更新检查间隔请输入 1～{Settings.MaxAutoUpdateDays} 的整数天数。");
+            autoUpdateDays.Focus();
+            return;
+        }
         var next = ReadAppearance();
         if (!TrySaveTextStyles(next)) return;
         next.BroadcastPath = selectedPath;
         next.PollIntervalMilliseconds = milliseconds;
         next.RewardRefreshMinutes = minutes;
+        next.AutoUpdateDays = updateDays;
         next.ObsEnabled = obsEnabled.IsChecked == true;
         var message = apply(next, true);
         if (message is not null) SetError(message);
@@ -1191,6 +1380,7 @@ public sealed class SettingsWindow : Window
         var draft = currentSettings().Copy();
         draft.MapSource = UsesGsi ? MapSource.Gsi : MapSource.Broadcast;
         draft.IsSvip = isSvip.IsChecked == true;
+        draft.UseNativeDamage = useNativeDamage.IsChecked == true;
         draft.ToggleHotkey = shortcuts[0].Text;
         draft.MoveHotkey = shortcuts[1].Text;
         draft.SettingsHotkey = shortcuts[2].Text;

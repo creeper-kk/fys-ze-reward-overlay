@@ -1,5 +1,8 @@
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using FysZeRewardOverlay;
@@ -52,6 +55,10 @@ Check(DamageProgress.Calculate(19, 20000) == new DamageProgress(0, 1, 0.95) &&
     DamageProgress.Calculate(21, 20000) == new DamageProgress(1, 19, 0.05) &&
     DamageProgress.Calculate(0, 20000) == new DamageProgress(0, 20, 0), "progress starts empty and wraps after an exact threshold");
 Check(DamageProgress.Calculate(null, 20000) is null && DamageProgress.Calculate(20, 0) is null, "no progress when kills are absent or conversion is disabled");
+Check(DamageProgress.FromDamage(23501, 24000) == new DamageProgress(0, 0.499m, 23501d / 24000) &&
+    DamageProgress.FromDamage(24000, 24000) == new DamageProgress(1, 24, 0) &&
+    DamageProgress.FromDamage(0, 24000) == new DamageProgress(0, 24, 0),
+    "native damage uses exact amounts and resets the bar at round and reward boundaries");
 bool rejected = false;
 try { RewardParser.Parse("{\"1\":{\"rankPasses\":2}}"); } catch (FormatException) { rejected = true; }
 Check(rejected, "missing fields are never silently zero");
@@ -61,7 +68,8 @@ Check(Shortcut.TryParse("Shift+=", out var up) && up == new Shortcut(4, 0xbb) &&
 Check(!Shortcut.TryParse("R", out _) && !Shortcut.TryParse("Ctrl+F12", out _) && !Shortcut.TryParse("Alt+R+M", out _), "reject unsafe or invalid shortcuts");
 Check(OverlayOptions.TryIntervals("0.25", "3", out var poll, out var refresh, out _) && poll == 250 && refresh == 3, "custom update intervals parsed with correct units");
 Check(!OverlayOptions.TryIntervals("0.1", "10", out _, out _, out _) && !OverlayOptions.TryIntervals("61", "10", out _, out _, out _), "poll interval bounds enforced");
-Check(!OverlayOptions.TryIntervals("NaN", "10", out _, out _, out _) && !OverlayOptions.TryIntervals("1", "0", out _, out _, out _) && !OverlayOptions.TryIntervals("1", "1441", out _, out _, out _), "invalid and excessive update intervals rejected");
+Check(OverlayOptions.TryIntervals("1", "4320", out _, out var maxRefresh, out _) && maxRefresh == 4320, "the full three-day reward refresh interval is accepted");
+Check(!OverlayOptions.TryIntervals("NaN", "10", out _, out _, out _) && !OverlayOptions.TryIntervals("1", "0", out _, out _, out _) && !OverlayOptions.TryIntervals("1", "4321", out _, out _, out _), "invalid and excessive update intervals rejected");
 Check(BroadcastFiles.TryNormalize("\"%LOCALAPPDATA%\\fys\\fys.broadcast.assistant.txt\"", out var expanded) && expanded == BroadcastFiles.DefaultPath, "manual path supports environment variables and quotes");
 Check(!BroadcastFiles.TryNormalize("relative.txt", out _) && !BroadcastFiles.TryNormalize(Path.GetTempPath(), out _), "manual path rejects relative paths and directories");
 
@@ -122,11 +130,71 @@ try
     Check((await ReleaseCheck.GetLatestAsync(repository, "1.2.5", releaseClient)).Comparison > 0 &&
         (await ReleaseCheck.GetLatestAsync(repository, "1.2.5.1", releaseClient)).Comparison == 0,
         "release check recognizes four-part patch versions");
+    releaseHandler.Body = """{"tag_name":"v1.2.5.2a"}""";
+    Check((await ReleaseCheck.GetLatestAsync(repository, "1.2.5.2", releaseClient)).Comparison < 0 &&
+        (await ReleaseCheck.GetLatestAsync(repository, "1.2.5.2a", releaseClient)).Comparison == 0 &&
+        (await ReleaseCheck.GetLatestAsync(repository, "1.2.5.3", releaseClient)).Comparison < 0,
+        "lettered builds sort before the final version with the same version number");
+    releaseHandler.Body = """{"tag_name":"v1.2.5.2","body":"## Release notes\nFixed updater","assets":[{"name":"FysZeRewardOverlay-v1.2.5.2-win-x64.zip","size":50,"digest":"sha256:1234","browser_download_url":"https://github.com/creeper-kk/fys-ze-reward-overlay/releases/download/v1.2.5.2/FysZeRewardOverlay-v1.2.5.2-win-x64.zip"}]}""";
+    var finalRelease = await ReleaseCheck.GetLatestAsync(repository, "1.2.5.2b", releaseClient);
+    Check(finalRelease.Comparison > 0 && finalRelease.Notes == "## Release notes\nFixed updater" &&
+        (RuntimeInformation.ProcessArchitecture != Architecture.X64 || finalRelease.Package is { Size: 50, Digest: "sha256:1234" }),
+        "the final release is newer than b and includes its notes and Windows x64 package");
+    Check((await ReleaseCheck.GetInstalledAsync(repository, "1.2.5.2", releaseClient))?.Notes == finalRelease.Notes &&
+        releaseHandler.LastPath == "/repos/creeper-kk/fys-ze-reward-overlay/releases/tags/v1.2.5.2",
+        "startup looks up the installed tag instead of the latest release");
+    Check(await ReleaseCheck.GetInstalledAsync(repository, "1.2.5.1", releaseClient) is null, "startup never uses another version's notes");
+    releaseHandler.Status = HttpStatusCode.NotFound;
+    Check(await ReleaseCheck.GetInstalledAsync(repository, "1.2.5.2", releaseClient) is null, "unpublished versions have no startup release notes");
+    releaseHandler.Status = HttpStatusCode.OK;
     releaseHandler.Body = """{"tag_name":"latest"}""";
     bool invalidRelease = false;
     try { await ReleaseCheck.GetLatestAsync(repository, "1.2.9", releaseClient); }
     catch (InvalidDataException) { invalidRelease = true; }
     Check(invalidRelease, "release check reports an invalid tag");
+
+    var now = DateTimeOffset.UtcNow;
+    var updateState = new UpdateState(now);
+    Check(Settings.CreateDefault().AutoUpdateDays == 3 && new UpdateState().IsDue(3, now), "automatic updates default to checking every three days");
+    Check(!updateState.IsDue(3, now.AddDays(3).AddSeconds(-1)) && updateState.IsDue(3, now.AddDays(3)) &&
+        updateState.IsDue(7, now.AddDays(7)) && !updateState.IsDue(0, now.AddYears(1)),
+        "automatic check schedule honors custom days and never mode");
+    var updateProfile = Path.Combine(temporary, "update-profile");
+    new Settings { AutoUpdateDays = 0 }.Save(updateProfile);
+    Check(Settings.Load(updateProfile).AutoUpdateDays == 0, "never automatically update persists across restarts");
+
+    var installed = ReleaseCheck.LocalVersion;
+    var origin = Path.Combine(AppContext.BaseDirectory, "FysZeRewardOverlay.exe");
+    var updater = PortableUpdates.ForProcess(updateProfile, origin, ["--data-dir", updateProfile])!;
+    using var archiveStream = new MemoryStream();
+    using (var archive = new ZipArchive(archiveStream, ZipArchiveMode.Create, leaveOpen: true))
+    {
+        foreach (string file in new[] { "FysZeRewardOverlay.exe", "FysZeRewardOverlay.dll", "FysZeRewardOverlay.runtimeconfig.json", "FysZeRewardOverlay.deps.json" })
+            archive.CreateEntryFromFile(Path.Combine(AppContext.BaseDirectory, file), file);
+        using var unrelated = new StreamWriter(archive.CreateEntry("../outside.txt").Open());
+        unrelated.Write("not an update file");
+    }
+    var zipBytes = archiveStream.ToArray();
+    var digest = "sha256:" + Convert.ToHexString(SHA256.HashData(zipBytes));
+    var zipHandler = new FakeHandler { Binary = zipBytes };
+    using var zipClient = new HttpClient(zipHandler);
+    var package = finalRelease with { Tag = "v" + installed, Package = new ReleaseAsset(new Uri(repository), zipBytes.Length, digest) };
+    bool invalidPackage = false;
+    try { await updater.StageAsync(package with { Package = package.Package! with { Digest = "sha256:bad" } }, false, zipClient); }
+    catch (InvalidDataException) { invalidPackage = true; }
+    Check(invalidPackage && updater.GetNextLaunch("1.0", true) is null, "a corrupt download is never staged");
+    await updater.StageAsync(package, false, zipClient);
+    var launch = updater.GetNextLaunch("1.0", true);
+    Check(launch is not null && File.Exists(launch.FileName) && !File.Exists(Path.Combine(Path.GetDirectoryName(launch.FileName)!, "..", "outside.txt")) &&
+        updater.GetNextLaunch("1.0", false) is null && updater.GetNextLaunch("1.0", true, package.Tag) is null,
+        "automatic staging selects only validated files and respects disabling and declining updates");
+    await updater.StageAsync(package, true, zipClient);
+    Check(zipHandler.Requests == 2 && updater.GetNextLaunch("1.0", false)?.FileName == launch!.FileName, "manual acceptance reuses an already downloaded package");
+    var forwarded = PortableUpdates.ForProcess(updateProfile, launch!.FileName, launch.ArgumentList.ToArray())!;
+    forwarded.ConfirmRunning(installed);
+    Check(forwarded.GetInstalledRelease(installed)?.Notes == package.Notes &&
+        updater.GetNextLaunch("1.0", false)?.FileName == launch.FileName && forwarded.GetNextLaunch(installed, true) is null,
+        "the installed version is confirmed, caches its notes, and remains active after disabling automatic updates");
 
     var input = Path.Combine(temporary, "broadcast.txt");
     File.WriteAllText(input, "地图: ze_lego\n关卡: 1", new UTF8Encoding(false));
@@ -178,12 +246,16 @@ try
     using (var snapshotJson = JsonDocument.Parse(snapshot))
         Check(snapshotJson.RootElement.EnumerateObject().All(map => RewardParser.Parse(map.Value).Count > 0),
             "the entire bundled snapshot is readable by the reward parser");
-    var settings = new Settings { Scale = 1.25, ToggleHotkey = "Ctrl+Shift+F8", Left = -100, IsSvip = true };
+    var settings = new Settings { Scale = 1.25, ToggleHotkey = "Ctrl+Shift+F8", Left = -100, IsSvip = true, UseNativeDamage = true };
     settings.Save(temporary);
     var loaded = Settings.Load(temporary);
     Check(loaded.Scale == 1.25 && loaded.ToggleHotkey == settings.ToggleHotkey && loaded.Left == -100, "settings persist including negative monitor coordinates");
     Check(loaded.IsSvip && Settings.Import(Path.Combine(temporary, "settings.json")).IsSvip && !Settings.CreateDefault().IsSvip,
         "SVIP persists in the profile and is off by default");
+    string legacyDamageSettings = Path.Combine(temporary, "legacy-damage.json");
+    File.WriteAllText(legacyDamageSettings, """{"UseNativeDamage":true}""");
+    Check(!loaded.UseNativeDamage && !Settings.Import(legacyDamageSettings).UseNativeDamage &&
+        !Settings.CreateDefault().UseNativeDamage, "kill estimates remain active for saved, imported and default settings");
     settings.PollIntervalMilliseconds = 250; settings.RewardRefreshMinutes = 3;
     settings.OverlayFontFamily = "Consolas";
     settings.RowSpacing = 14;
@@ -232,7 +304,7 @@ try
     """);
     loaded = Settings.Load(temporary);
     Check(loaded.ToggleHotkey == "Alt+P" && loaded.MoveHotkey == "Alt+O" && loaded.BackgroundOpacity == 0.15 && loaded.Left == 2057, "upgrade preserves existing personal settings");
-    Check(!loaded.IsSvip, "existing profiles default to non-SVIP");
+    Check(!loaded.IsSvip && !loaded.UseNativeDamage, "existing profiles default to non-SVIP and kill estimates");
     Check(loaded.DisplayOrder.SequenceEqual(OverlayOptions.ReorderableFields), "existing profiles retain the original row order");
     Check(loaded.MapSource == MapSource.Broadcast && loaded.BroadcastPath == BroadcastFiles.DefaultPath, "existing settings default to the original TXT source");
     Check(loaded.RowSpacing == 0 && loaded.ColumnSpacing == 0, "old settings retain the default spacing");
@@ -244,7 +316,7 @@ try
         "old settings receive current defaults for absent fields");
     loaded.PollIntervalMilliseconds = 0; loaded.RewardRefreshMinutes = 99999; loaded.Save(temporary);
     loaded = Settings.Load(temporary);
-    Check(loaded.PollIntervalMilliseconds == 200 && loaded.RewardRefreshMinutes == 1440, "out of range stored intervals are clamped");
+    Check(loaded.PollIntervalMilliseconds == 200 && loaded.RewardRefreshMinutes == 4320, "out of range stored intervals are clamped");
 
     var exported = Path.Combine(temporary, "backup.json");
     settings.Locked = false;
@@ -307,14 +379,23 @@ try
         var matched = gsi.Read(input);
         Check(matched.Title == "乐高" && matched.CtScore is null && DisplayInfo.Resolve(matched, data).Reward == parsed[4], "same-map TXT takes precedence over a score");
         Check(!DisplayInfo.Resolve(matched with { Stage = 1 }, singleStage).Available, "an explicit TXT stage still requires an exact reward match");
-        Check(await Push("""{"map":{"name":"ze_lego 僵尸逃跑①"},"provider":{"steamid":"101"},"player":{"steamid":"101","match_stats":{"kills":20}}}""") == HttpStatusCode.OK &&
-            DisplayInfo.Resolve(gsi.Read(input), data).Kills == 20, "local kills supplement a recognized TXT stage");
+        Check(await Push("""{"map":{"name":"ze_lego 僵尸逃跑①"},"provider":{"steamid":"101"},"player":{"steamid":"101","match_stats":{"kills":20},"state":{"round_totaldmg":23501}}}""") == HttpStatusCode.OK &&
+            DisplayInfo.Resolve(gsi.Read(input), data) is { Kills: 20, RoundDamage: 23501 } &&
+            gsi.CurrentRoundDamage == 23501, "local combat stats supplement a recognized TXT stage and expose the raw reading");
+        Check(gsi.AddCombatStats(BroadcastReader.Read(input)) is { Kills: 20, RoundDamage: 23501 } &&
+            gsi.AddCombatStats(BroadcastReader.Parse("地图: ze_other\n关卡: 1")).RoundDamage is null,
+            "native damage supplements TXT map mode only on the matching map");
         var noScore = gsi.Read("");
         Check(DisplayInfo.Resolve(noScore, singleStage with { Offline = true }) is { Available: true, Stage: 4, StageInferred: false, Kills: 20 } cachedSingle &&
             cachedSingle.Source.StartsWith("离线缓存"), "one cached stage is available without a CT score and preserves kill progress");
         Check(!DisplayInfo.Resolve(noScore, data).Available, "multiple reward stages still require a TXT stage or CT score");
-        Check(await Push("""{"map":{"name":"ze_lego 僵尸逃跑①"},"provider":{"steamid":"101"},"player":{"steamid":"102","match_stats":{"kills":60}}}""") == HttpStatusCode.OK &&
-            gsi.Read(input).Kills is null, "spectating another player clears the local kill progress");
+        Check(await Push("""{"map":{"name":"ze_lego 僵尸逃跑①"},"provider":{"steamid":"101"},"player":{"steamid":"101","match_stats":{"kills":20},"state":{"round_totaldmg":0}}}""") == HttpStatusCode.OK &&
+            gsi.Read(input) is { Kills: 20, RoundDamage: 0 }, "a round reset preserves match kills and reports zero damage");
+        Check(await Push("""{"map":{"name":"ze_lego 僵尸逃跑①"},"provider":{"steamid":"101"},"player":{"steamid":"101","match_stats":{"kills":20}}}""") == HttpStatusCode.OK &&
+            gsi.Read(input) is { Kills: 20, RoundDamage: null }, "a missing damage field stays distinct from zero");
+        Check(await Push("""{"map":{"name":"ze_lego 僵尸逃跑①"},"provider":{"steamid":"101"},"player":{"steamid":"102","match_stats":{"kills":60},"state":{"round_totaldmg":50000}}}""") == HttpStatusCode.OK &&
+            gsi.Read(input) is { Kills: null, RoundDamage: null } && gsi.CurrentRoundDamage is null,
+            "spectating another player clears local kills and native damage");
         Check(await Push("""{"map":{"name":"ZE_LEGO 僵尸逃跑①","team_ct":{"score":2}}}""") == HttpStatusCode.OK, "restore score for stage tests");
         File.WriteAllText(input, "区服: [风云社] 僵尸逃跑②\n地图: ze_lego\n关卡: 4/4");
         Check(gsi.Read(input) is { Map: "ze_lego", Stage: 3, CtScore: 2 }, "same map on a different FYS server falls back to the CT score");
@@ -333,9 +414,11 @@ try
         Check(await Push("{") == HttpStatusCode.BadRequest && gsi.Read(input).Map == "ze_other", "malformed payload leaves the latest good map intact");
         Check(await Push("""{"provider":{"appid":730}}""") == HttpStatusCode.OK && gsi.Read(input).Map == "", "a payload without a map clears the old map");
         File.WriteAllText(input, "地图: ze_lego\n关卡: 4/4");
-        Check(await Push("""{"map":{"name":"ze_lego"}}""") == HttpStatusCode.OK && gsi.Read(input).Stage == 4, "GSI recovers on reconnection");
+        Check(await Push("""{"map":{"name":"ze_lego"},"player":{"state":{"round_totaldmg":30000}}}""") == HttpStatusCode.OK &&
+            gsi.Read(input) is { Stage: 4, RoundDamage: 30000 }, "GSI recovers on reconnection");
         clock.Advance(TimeSpan.FromSeconds(15));
-        Check(gsi.Read(input) is { Map: "", Stage: null }, "expired GSI snapshot cannot use the old TXT stage");
+        Check(gsi.Read(input) is { Map: "", Stage: null, RoundDamage: null } && gsi.CurrentRoundDamage is null,
+            "expired GSI snapshot clears both the old TXT stage and native damage");
     }
     var timedHandler = new FakeHandler { Body = json };
     using var timedRepo = new RewardRepository(Path.Combine(temporary, "timed-cache"), new HttpClient(timedHandler), clock);
@@ -343,9 +426,9 @@ try
     Check(timedHandler.Requests == 1, "reward refresh obeys existing interval");
     timedRepo.RefreshInterval = TimeSpan.FromMinutes(1); await timedRepo.GetAsync("ze_timer");
     Check(timedHandler.Requests == 2, "shorter interval takes effect on existing cached data");
-    timedRepo.RefreshInterval = TimeSpan.FromHours(1); clock.Advance(TimeSpan.FromMinutes(2)); await timedRepo.GetAsync("ze_timer");
+    timedRepo.RefreshInterval = TimeSpan.FromMinutes(4320); clock.Advance(TimeSpan.FromMinutes(2)); await timedRepo.GetAsync("ze_timer");
     Check(timedHandler.Requests == 2, "longer interval avoids premature refresh");
-    clock.Advance(TimeSpan.FromMinutes(58)); await timedRepo.GetAsync("ze_timer");
+    clock.Advance(TimeSpan.FromMinutes(4318)); await timedRepo.GetAsync("ze_timer");
     Check(timedHandler.Requests == 3, "configured interval expires at requested boundary");
     timedHandler.Fail = true; timedRepo.Invalidate(); await timedRepo.GetAsync("ze_timer");
     clock.Advance(TimeSpan.FromSeconds(29)); await timedRepo.GetAsync("ze_timer");
@@ -368,13 +451,16 @@ sealed class FakeTimeProvider : TimeProvider
 sealed class FakeHandler : HttpMessageHandler
 {
     public string Body = "";
+    public byte[]? Binary;
+    public string? LastPath;
     public bool Fail;
     public int Requests;
     public HttpStatusCode Status = HttpStatusCode.OK;
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Requests++;
+        LastPath = request.RequestUri?.AbsolutePath;
         if (Fail) throw new HttpRequestException("simulated offline");
-        return Task.FromResult(new HttpResponseMessage(Status) { Content = new StringContent(Body) });
+        return Task.FromResult(new HttpResponseMessage(Status) { Content = Binary is { } bytes ? new ByteArrayContent(bytes) : new StringContent(Body) });
     }
 }
