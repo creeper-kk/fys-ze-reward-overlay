@@ -720,6 +720,37 @@ public sealed class SettingsWindow : Window
         var acknowledgements = Button("致谢与开源依赖", () => OpenLink(repository + "/blob/main/ACKNOWLEDGMENTS.md"), false);
         acknowledgements.Margin = new Thickness(0, 10, 0, 0);
         panel.Children.Add(acknowledgements);
+        AddRecentVersions(panel);
+    }
+
+    private void AddRecentVersions(StackPanel panel)
+    {
+        var title = Label(panel, "最近版本");
+        title.FontSize = 16;
+        title.Margin = new Thickness(0, 16, 0, 8);
+        (string Version, string Summary)[] releases =
+        [
+            ("1.2.5.3", "「关于」新增最近三个版本的更新摘要，并突出显示当前版本。"),
+            ("1.2.5.2", "新增自动更新和发布说明。改进地图与关卡来源、文字样式和拖动排序，修复悬浮窗拖动时的位置偏移。"),
+            ("1.2.5.1", "修复 SVIP 云点加成。20% 加成按基础云点与伤害兑换云点之和计算，伤害兑换云点仍单独显示。")
+        ];
+        foreach (var (version, summary) in releases)
+        {
+            bool current = version == ReleaseCheck.LocalVersion;
+            var details = new StackPanel();
+            var heading = current ? $"v{version}　当前版本" : $"v{version}";
+            details.Children.Add(OverlayWindow.Text(heading, 13, current ? "#F0F0F2" : "#A9B4C2", true));
+            var description = OverlayWindow.Text(summary, 12, current ? "#CACAD0" : "#A1A1AA");
+            description.TextWrapping = TextWrapping.Wrap;
+            description.Margin = new Thickness(0, 3, 0, 0);
+            details.Children.Add(description);
+            panel.Children.Add(new Border
+            {
+                Background = current ? (Brush)FindResource("Surface") : Brushes.Transparent,
+                CornerRadius = new CornerRadius(10), Padding = new Thickness(14, 8, 14, 8),
+                Margin = new Thickness(0, 0, 0, 4), Child = details
+            });
+        }
     }
 
     private void OpenLink(string url)
