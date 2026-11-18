@@ -145,7 +145,12 @@ try
         "startup looks up the installed tag instead of the latest release");
     Check(await ReleaseCheck.GetInstalledAsync(repository, "1.2.5.1", releaseClient) is null, "startup never uses another version's notes");
     releaseHandler.Status = HttpStatusCode.NotFound;
-    Check(await ReleaseCheck.GetInstalledAsync(repository, "1.2.5.2", releaseClient) is null, "unpublished versions have no startup release notes");
+    Check(await ReleaseCheck.GetInstalledAsync(repository, "1.2.5.2", releaseClient) is null, "unpublished versions have no online release notes");
+    Check(ReleaseCheck.TryCompare("v1.3.0.1", "1.3.0.1a", out int kzReleaseOrder) && kzReleaseOrder > 0 &&
+        ReleaseCheck.GetBundledRelease("1.3.0.1") is { Tag: "v1.3.0.1" } bundledKz &&
+        bundledKz.Notes.Contains("KZ 地图探测") && bundledKz.Notes.Contains("非全球图") &&
+        ReleaseCheck.GetBundledRelease("1.3.0.1a") is null,
+        "the final KZ release contains the merged offline announcement and supersedes the preview build");
     releaseHandler.Status = HttpStatusCode.OK;
     releaseHandler.Body = """{"tag_name":"latest"}""";
     bool invalidRelease = false;
@@ -412,14 +417,81 @@ try
         Check(await Push("""{"map":{"name":"workshop/123456/ze_other"}}""") == HttpStatusCode.OK, "GSI accepts a workshop map path");
         Check(gsi.Read(input) is { Map: "ze_other", Stage: null }, "map change blocks a different map's TXT stage");
         Check(await Push("{") == HttpStatusCode.BadRequest && gsi.Read(input).Map == "ze_other", "malformed payload leaves the latest good map intact");
+        Check(await Push("""{"map":{"name":"workshop/3121168339/KZ_GROTTO","mode":"custom"}}""") == HttpStatusCode.OK &&
+            gsi.CurrentMap == "kz_grotto" && KzMaps.IsKzMap(gsi.CurrentMap), "KZ reads the normalized workshop map from GSI independently of ZE data");
         Check(await Push("""{"provider":{"appid":730}}""") == HttpStatusCode.OK && gsi.Read(input).Map == "", "a payload without a map clears the old map");
         File.WriteAllText(input, "地图: ze_lego\n关卡: 4/4");
         Check(await Push("""{"map":{"name":"ze_lego"},"player":{"state":{"round_totaldmg":30000}}}""") == HttpStatusCode.OK &&
             gsi.Read(input) is { Stage: 4, RoundDamage: 30000 }, "GSI recovers on reconnection");
         clock.Advance(TimeSpan.FromSeconds(15));
-        Check(gsi.Read(input) is { Map: "", Stage: null, RoundDamage: null } && gsi.CurrentRoundDamage is null,
+        Check(gsi.Read(input) is { Map: "", Stage: null, RoundDamage: null } && gsi.CurrentRoundDamage is null && gsi.CurrentMap == "",
             "expired GSI snapshot clears both the old TXT stage and native damage");
     }
+
+    var kzHandler = new FakeHandler { Body = """
+        {"name":"kz_grotto","state":"approved","courses":[
+          {"name":"Main","filters":{"classic":{"nub_tier":"easy","pro_tier":"medium"},
+                                    "vanilla":{"nub_tier":"medium","pro_tier":"advanced"}}},
+          {"name":"Garden","filters":{}}
+        ]}
+        """ };
+    using var kzClient = new HttpClient(kzHandler);
+    var kzMaps = new KzMaps(kzClient, clock);
+    Check(kzMaps.Lookup("kz_grotto") is null && kzHandler.LastPath == "/maps/kz_grotto", "KZ fetches the official map endpoint once");
+    var kzMap = kzMaps.Lookup("kz_grotto")?.Map;
+    Check(kzMap is { Courses.Count: 2 } && kzMap.Courses[0] is { Ckz: { Nub: "easy", Pro: "medium" }, Vnl: { Nub: "medium", Pro: "advanced" } } &&
+        KzTiers.Format(kzMap.Courses[0].Ckz?.Nub) == "T2 Easy" && kzMap.Courses[1].Ckz is null && kzHandler.Requests == 1,
+        "KZ caches both mode filters, preserves bonus courses, and formats official tier numbers");
+    var reorderedCourses = new KzMapResult(kzMap! with { Courses = kzMap!.Courses.Reverse().ToArray() });
+    Check(KzOverlayInfo.Resolve(reorderedCourses, KzMode.Vnl, KzMode.Vnl) is { Mode: KzMode.Vnl, VnlTier: 3, CkzTier: null } &&
+          KzOverlayInfo.Resolve(reorderedCourses, KzMode.Vnl, KzMode.Ckz) is { Mode: KzMode.Vnl, VnlTier: null, CkzTier: 2 } &&
+          KzOverlayInfo.Resolve(reorderedCourses, KzMode.Auto, KzMode.Auto) is { VnlTier: 3, CkzTier: 2 },
+        "KZ overlay uses the main course NUB tier and keeps actual mode separate from manual tier selection");
+    Check(KzOverlayInfo.Resolve(new(null), KzMode.Ckz, KzMode.Ckz) is { Mode: KzMode.Ckz, DifficultyStatus: "非全球图" } &&
+          KzOverlayInfo.Resolve(new(null, Failed: true), KzMode.Ckz, KzMode.Ckz).DifficultyStatus == "暂不可用",
+        "KZ overlay preserves mode and distinguishes non-global difficulty from API failure");
+    kzMaps.Lookup("kz_gro");
+    Check(kzMaps.Lookup("kz_gro") is { Failed: false, Map: null }, "KZ ignores a fuzzy API match for another map");
+    kzHandler.Status = HttpStatusCode.NotFound;
+    kzMaps.Lookup("kz_unlisted");
+    Check(kzMaps.Lookup("kz_unlisted") is { Failed: false, Map: null } && !KzMaps.IsKzMap("ze_lego"), "KZ separates unlisted maps from connection errors");
+    kzHandler.Status = HttpStatusCode.ServiceUnavailable;
+    kzMaps.Lookup("kz_retry");
+    int kzRequests = kzHandler.Requests;
+    clock.Advance(TimeSpan.FromSeconds(29));
+    Check(kzMaps.Lookup("kz_retry") is { Failed: true } && kzHandler.Requests == kzRequests, "KZ throttles failed lookups");
+    clock.Advance(TimeSpan.FromSeconds(1));
+    Check(kzMaps.Lookup("kz_retry") is null && kzHandler.Requests == kzRequests + 1, "KZ retries an unavailable API");
+
+    var consoleLog = Path.Combine(temporary, "console.log");
+    File.WriteAllText(consoleLog, "Possible modes: (Current mode is Vanilla)\n");
+    var modeLog = new KzModeLog(consoleLog);
+    Check(modeLog.Read("kz_grotto") is null, "KZ starts at the live console tail");
+    File.AppendAllText(consoleLog, "[KZ] \u0001你已切换到 \u0003Classic");
+    Check(modeLog.Read("kz_grotto") is null, "KZ retains partial log lines");
+    File.AppendAllText(consoleLog, " \u0001模式.\r\n");
+    Check(modeLog.Read("kz_grotto") == KzMode.Ckz, "KZ detects a Chinese server mode change with chat colors");
+    File.AppendAllText(consoleLog, "[ALL] Other player: You have switched to the Vanilla mode.\n");
+    Check(modeLog.Read("kz_grotto") == KzMode.Ckz, "KZ ignores ordinary player chat");
+    File.AppendAllText(consoleLog, "[Client] CL: Disconnecting from server: NETWORK_DISCONNECT_LOOPDEACTIVATE\n");
+    Check(modeLog.Read("kz_grotto") is null, "KZ clears mode on disconnect even before GSI changes");
+    File.AppendAllText(consoleLog, "[Client] Map: \"kz_next\"\nPossible modes: (Current mode is Vanilla)\n");
+    Check(modeLog.Read("kz_grotto") is null && modeLog.Read("kz_next") == KzMode.Vnl, "KZ scopes the console mode to the map even when the console updates before GSI");
+    Check(modeLog.Read("kz_third") is null, "KZ cannot reuse a previous map's mode");
+    var kzSettingsPath = Path.Combine(temporary, "kz-settings.json");
+    new Settings
+    {
+        KzEnabled = false, KzMode = KzMode.Vnl, HiddenFields = OverlayField.KzMode,
+        KzTextColors = new() { ["T0"] = "#bbccdd", ["VNL"] = "#123456", ["CKZ"] = "invalid", ["T11"] = "#111111" }
+    }.Export(kzSettingsPath);
+    var kzProfile = Settings.Import(kzSettingsPath);
+    Check(kzProfile is { KzEnabled: false, KzMode: KzMode.Vnl } && Settings.CreateDefault() is { KzEnabled: true, KzMode: KzMode.Auto },
+        "KZ settings round trip and default to automatic detection");
+    kzProfile.Copy().KzTextColors["T0"] = "#ABCDEF";
+    Check(kzProfile.Hides(OverlayField.KzMode) && !kzProfile.Hides(OverlayField.KzDifficulty) &&
+          kzProfile.KzTextColors is { Count: 2 } && kzProfile.KzTextColors["T0"] == "#BBCCDD" && kzProfile.KzTextColors["VNL"] == "#123456",
+        "KZ display options and per-token colors persist independently and reject invalid colors");
+
     var timedHandler = new FakeHandler { Body = json };
     using var timedRepo = new RewardRepository(Path.Combine(temporary, "timed-cache"), new HttpClient(timedHandler), clock);
     await timedRepo.GetAsync("ze_timer"); clock.Advance(TimeSpan.FromMinutes(2)); await timedRepo.GetAsync("ze_timer");

@@ -41,6 +41,15 @@ public sealed class GsiListener : IDisposable
         }
     }
 
+    internal string CurrentMap
+    {
+        get
+        {
+            var update = Volatile.Read(ref latest);
+            return update is not null && !IsExpired(update) ? update.Map : "";
+        }
+    }
+
     private bool IsExpired(MapUpdate update) => clock.GetElapsedTime(update.ReceivedAt) >= Expiry;
 
     public static string Config => $$"""

@@ -54,9 +54,13 @@ public sealed class Settings
     public int RewardRefreshMinutes { get; set; } = 10;
     public int AutoUpdateDays { get; set; } = DefaultAutoUpdateDays;
     public bool ObsEnabled { get; set; }
+    public bool KzEnabled { get; set; } = true;
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public KzMode KzMode { get; set; }
     public string OverlayFontFamily { get; set; } = FontCatalog.DefaultName;
     public OverlayTextStyle GlobalTextStyle { get; set; } = new();
     public Dictionary<OverlayField, OverlayTextStyle> FieldTextStyles { get; set; } = new();
+    public Dictionary<string, string> KzTextColors { get; set; } = new();
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public OverlayField HiddenFields { get; set; } = DefaultHiddenFields;
     public OverlayField[] DisplayOrder { get; set; } = (OverlayField[])OverlayOptions.ReorderableFields.Clone();
@@ -124,6 +128,7 @@ public sealed class Settings
         if (Left.HasValue && !double.IsFinite(Left.Value)) Left = null;
         if (Top.HasValue && !double.IsFinite(Top.Value)) Top = null;
         if (!Enum.IsDefined(MapSource)) MapSource = MapSource.Broadcast;
+        if (!Enum.IsDefined(KzMode)) KzMode = KzMode.Auto;
         if (string.IsNullOrWhiteSpace(BroadcastPath)) BroadcastPath = MapSource == MapSource.Gsi ? "" : BroadcastFiles.DefaultPath;
         PollIntervalMilliseconds = Math.Clamp(PollIntervalMilliseconds, 200, 60000);
         RewardRefreshMinutes = Math.Clamp(RewardRefreshMinutes, 1, MaxRewardRefreshMinutes);
@@ -133,6 +138,10 @@ public sealed class Settings
         FieldTextStyles = (FieldTextStyles ?? new())
             .Where(entry => OverlayTypography.Labels.ContainsKey(entry.Key) && entry.Value is not null)
             .ToDictionary(entry => entry.Key, entry => entry.Value.Validated());
+        KzTextColors = (KzTextColors ?? new())
+            .Where(entry => Array.IndexOf(KzTypography.ColorTargets, entry.Key) >= 0 &&
+                entry.Value is string color && OverlayTextStyle.IsValidColor(color))
+            .ToDictionary(entry => entry.Key, entry => entry.Value.ToUpperInvariant());
         HiddenFields &= OverlayField.All;
         var defaultOrder = OverlayOptions.ReorderableFields;
         DisplayOrder = (DisplayOrder ?? Array.Empty<OverlayField>()).Intersect(defaultOrder).Union(defaultOrder).ToArray();
@@ -152,6 +161,7 @@ public sealed class Settings
     {
         var copy = (Settings)MemberwiseClone();
         copy.FieldTextStyles = new(FieldTextStyles);
+        copy.KzTextColors = new(KzTextColors);
         copy.DisplayOrder = (OverlayField[])DisplayOrder.Clone();
         return copy;
     }

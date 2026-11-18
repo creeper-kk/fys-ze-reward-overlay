@@ -33,6 +33,14 @@ internal sealed record ReleaseCheck(string Tag, string PageUrl, int Comparison, 
     internal static Task<ReleaseCheck?> GetInstalledAsync(string repository, string version, HttpClient? client = null) =>
         GetAsync(repository, "tags/" + Uri.EscapeDataString("v" + version), version, client, allowMissing: true);
 
+    internal static ReleaseCheck? GetBundledRelease(string version)
+    {
+        using var stream = Assembly.GetManifestResourceStream($"release-notes-{version}.md");
+        if (stream is null) return null;
+        using var reader = new StreamReader(stream);
+        return new("v" + version, Repository.TrimEnd('/') + "/releases", 0, reader.ReadToEnd(), null);
+    }
+
     private static async Task<ReleaseCheck?> GetAsync(string repository, string endpoint, string localVersion, HttpClient? client, bool allowMissing)
     {
         var repo = new Uri(repository);

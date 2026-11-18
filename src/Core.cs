@@ -152,6 +152,7 @@ public record RewardData(Dictionary<int, Reward>? Rewards, DateTimeOffset? Fetch
 }
 public record DisplayInfo(bool Available, string Map, string Title, int? Stage, Reward? Reward, string Source, string Detail)
 {
+    internal KzOverlayInfo? Kz { get; init; }
     public const string UnavailableText = "当前无法获取该地图信息";
     public const string InferredStageUnavailableText = "当前关卡暂无地图奖励,或请手动核对关卡数据";
     public bool StageInferred { get; init; }

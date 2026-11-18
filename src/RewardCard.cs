@@ -25,6 +25,8 @@ internal sealed class RewardCard
     private readonly TextBlock title = OverlayTypography.CreateText(OverlayField.MapTitle, "等待地图信息");
     private readonly TextBlock map = OverlayTypography.CreateText(OverlayField.MapName, "");
     private readonly TextBlock stage = OverlayTypography.CreateText(OverlayField.Stage, "");
+    private readonly TextBlock kzDifficulty = OverlayTypography.CreateText(OverlayField.KzDifficulty, "");
+    private readonly TextBlock kzMode = OverlayTypography.CreateText(OverlayField.KzMode, "");
     private readonly TextBlock unavailable = OverlayTypography.CreateText(OverlayField.Unavailable, DisplayInfo.UnavailableText);
     private readonly TextBlock reason = OverlayTypography.CreateText(OverlayField.ErrorDetail, "");
     private readonly TextBlock source = OverlayTypography.CreateText(OverlayField.Source, "");
@@ -86,6 +88,9 @@ internal sealed class RewardCard
         displayRows.Add(OverlayField.MapName, map);
         stage.Margin = new Thickness(0, 0, 0, 12);
         displayRows.Add(OverlayField.Stage, stage);
+        kzDifficulty.TextWrapping = TextWrapping.Wrap;
+        displayRows.Add(OverlayField.KzDifficulty, kzDifficulty);
+        displayRows.Add(OverlayField.KzMode, kzMode);
 
         for (int i = 0; i < RewardFields.Length; i++)
         {
@@ -165,7 +170,7 @@ internal sealed class RewardCard
         inputUnavailable = fileUnavailable;
         demo = isDemo;
         lastDisplay = info;
-        title.Text = info.Available ? (string.IsNullOrWhiteSpace(info.Title) ? info.Map : info.Title) : "地图信息";
+        title.Text = info.Title;
         title.ToolTip = title.Text;
         map.Text = info.Map;
         map.ToolTip = info.Map;
@@ -189,6 +194,7 @@ internal sealed class RewardCard
             lastEconProgress = econ;
         }
         else lastRankProgress = lastEconProgress = null;
+        if (info.Kz is { } kz) RenderKzText(kz);
         reason.Text = info.Detail + (inputUnavailable ? "\n可从系统托盘选择" + BroadcastFiles.DisplayName + "，或按 " + settings.SettingsHotkey + " 打开设置。" : "");
         source.Text = info.Available ? info.Source : "等待有效的 ZE 地图与关卡";
         if (!demo && settings.MapSource == MapSource.Gsi)
@@ -198,6 +204,31 @@ internal sealed class RewardCard
         ApplySourceColor();
         source.ToolTip = info.Detail;
         ApplyInformationVisibility();
+    }
+
+    private void RenderKzText(KzOverlayInfo info)
+    {
+        kzDifficulty.Text = "难度 ";
+        if (info.DifficultyStatus.Length > 0) kzDifficulty.Inlines.Add(info.DifficultyStatus);
+        if (info.VnlTier is int vnl) AddTier(vnl, KzMode.Vnl);
+        if (info.VnlTier.HasValue && info.CkzTier.HasValue) kzDifficulty.Inlines.Add(" / ");
+        if (info.CkzTier is int ckz) AddTier(ckz, KzMode.Ckz);
+        string mode = KzTypography.ModeName(info.Mode);
+        kzMode.Text = "";
+        kzMode.Inlines.Add(info.Mode == KzMode.Auto ? new Run(mode) : Colored(mode));
+
+        void AddTier(int tier, KzMode mode)
+        {
+            kzDifficulty.Inlines.Add(Colored($"T{tier}"));
+            kzDifficulty.Inlines.Add("(");
+            kzDifficulty.Inlines.Add(Colored(KzTypography.ModeName(mode)));
+            kzDifficulty.Inlines.Add(")");
+        }
+
+        Run Colored(string token) => new(token)
+        {
+            Foreground = Brush(settings.KzTextColors.GetValueOrDefault(token, KzTypography.DefaultColor(token)))
+        };
     }
 
     private static Grid CreateProgressBar()
@@ -242,20 +273,27 @@ internal sealed class RewardCard
     {
         static Visibility Show(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
         var info = lastDisplay;
-        var normalFields = OverlayField.All & ~OverlayField.ErrorDetail;
-        bool allHidden = info?.Available == true && (settings.HiddenFields & normalFields) == normalFields;
-        bool needsMoveHandle = allHidden && !settings.Locked;
-        heading.Text = needsMoveHandle ? "ZE  /  拖动模式" : "ZE  /  通关奖励";
-        top.Visibility = Show(!settings.Hides(OverlayField.Heading) || needsMoveHandle);
-        title.Visibility = Show(!settings.Hides(OverlayField.MapTitle));
+        bool kz = info?.Kz is not null;
+        title.Visibility = Show(!settings.Hides(OverlayField.MapTitle) && !string.IsNullOrWhiteSpace(info?.Title));
         map.Visibility = Show(!settings.Hides(OverlayField.MapName) && !string.IsNullOrWhiteSpace(info?.Map));
-        stage.Visibility = Show(info?.Stage.HasValue == true && !settings.Hides(OverlayField.Stage));
+        stage.Visibility = Show(!kz && info?.Stage.HasValue == true && !settings.Hides(OverlayField.Stage));
+        kzDifficulty.Visibility = Show(kz && !settings.Hides(OverlayField.KzDifficulty));
+        kzMode.Visibility = Show(kz && !settings.Hides(OverlayField.KzMode));
         for (int i = 0; i < RewardFields.Length; i++)
-            fieldRows[i].Visibility = Show(info?.Available == true && !settings.Hides(RewardFields[i]));
+            fieldRows[i].Visibility = Show(info?.Reward is not null && !settings.Hides(RewardFields[i]));
         reason.Visibility = Show(!settings.Hides(OverlayField.ErrorDetail));
-        source.Visibility = Show(!settings.Hides(OverlayField.Source));
+        source.Visibility = Show(!kz && !settings.Hides(OverlayField.Source));
         hint.Visibility = Show(!settings.Hides(OverlayField.HotkeyHint));
         footer.Visibility = Show(source.Visibility == Visibility.Visible || hint.Visibility == Visibility.Visible);
+        bool allHidden = info?.Available == true && settings.Hides(OverlayField.Heading) && footer.Visibility == Visibility.Collapsed;
+        if (allHidden)
+        {
+            foreach (var row in displayRows.Values) allHidden &= row.Visibility == Visibility.Collapsed;
+        }
+        bool needsMoveHandle = allHidden && !settings.Locked;
+        string game = kz ? "KZ" : "ZE";
+        heading.Text = game + (needsMoveHandle ? "  /  拖动模式" : kz ? "  /  地图信息" : "  /  通关奖励");
+        top.Visibility = Show(!settings.Hides(OverlayField.Heading) || needsMoveHandle);
         selectFileItem.Visibility = Show(inputUnavailable && !settings.Locked);
         ApplyRowSpacing(content);
         ApplyRowSpacing(unavailablePanel);
@@ -286,6 +324,11 @@ internal sealed class RewardCard
     private void ApplyColumnSpacing()
     {
         double width = 344;
+        if (lastDisplay?.Kz is not null)
+        {
+            content.Width = width;
+            return;
+        }
         double numberWidth = 0, labelWidth = 0;
         for (int i = 0; i < RewardFields.Length; i++)
         {
@@ -348,6 +391,7 @@ internal sealed class RewardCard
         if (settings.Locked) moveMenu.IsOpen = false;
         content.LayoutTransform = new ScaleTransform(settings.Scale, settings.Scale);
         hint.Text = settings.ToggleHotkey + " 显隐   ·   " + settings.MoveHotkey + " 拖动";
+        if (lastDisplay?.Kz is { } kz) RenderKzText(kz);
         if ((svipChanged || damageModeChanged) && lastDisplay is { } info) Render(info, inputUnavailable, demo);
         else ApplyInformationVisibility();
     }

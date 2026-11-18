@@ -25,11 +25,13 @@ public enum OverlayField
     Source = 256,
     HotkeyHint = 512,
     ErrorDetail = 1024,
-    All = 2047,
     Unavailable = 2048,
     SettingsButton = 4096,
     LockButton = 8192,
-    SelectFileButton = 16384
+    SelectFileButton = 16384,
+    KzDifficulty = 32768,
+    KzMode = 65536,
+    All = 2047 | KzDifficulty | KzMode
 }
 
 public static class OverlayOptions
@@ -40,6 +42,7 @@ public static class OverlayOptions
         (OverlayField.MapName, "地图英文名"), (OverlayField.Stage, "当前关卡"),
         (OverlayField.RankPasses, "通关云点"), (OverlayField.RankDamage, "云点伤害转化比"),
         (OverlayField.EconPasses, "通关龙晶"), (OverlayField.EconDamage, "龙晶伤害转化比"),
+        (OverlayField.KzDifficulty, "地图难度"), (OverlayField.KzMode, "模式"),
         (OverlayField.Source, "数据来源 / 缓存状态"), (OverlayField.HotkeyHint, "底部快捷键提示"),
         (OverlayField.ErrorDetail, "无法获取信息的详细原因")
     };

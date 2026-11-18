@@ -51,6 +51,10 @@ public sealed class SettingsWindow : Window
     private readonly ComboBox textWeight = new() { Width = 150, MaxDropDownHeight = 300 };
     private readonly Dictionary<OverlayField, TextStyleDraft> styleDrafts = new();
     private readonly Dictionary<string, RadioButton> swatches = new();
+    private readonly ComboBox kzColorTargets = new() { Width = 150, MaxDropDownHeight = 300 };
+    private readonly TextBox kzColorValue = new() { Width = 80 };
+    private readonly Dictionary<string, RadioButton> kzSwatches = new();
+    private readonly Dictionary<string, string> kzColorDrafts = new();
     private Button resetTextSize = null!;
     private Button resetTextColor = null!;
     private OverlayField textTarget;
@@ -67,6 +71,10 @@ public sealed class SettingsWindow : Window
     private Grid? draggedDisplayRow;
     private int displayDragTarget = -1;
     private readonly CheckBox obsEnabled = new() { Content = "启用 OBS 浏览器源" };
+    private readonly CheckBox kzEnabled = new() { Tag = "关闭", Content = "开启" };
+    private readonly ComboBox kzMode = new() { SelectedValuePath = nameof(Tag) };
+    private readonly KzMapPanel kzMapPanel = new() { Visibility = Visibility.Collapsed };
+    private int kzPageIndex;
     private readonly TextBlock obsStatus = OverlayWindow.Text("", 12, "#A1A1AA");
     private readonly TextBox obsUrl = new() { Text = ObsBrowserSource.Url, IsReadOnly = true };
     private Button obsOpen = null!;
@@ -89,6 +97,7 @@ public sealed class SettingsWindow : Window
     };
     private readonly DockPanel editor = new();
     private readonly DockPanel rightPane = new() { Margin = new Thickness(4, 8, 22, 20) };
+    private readonly Border integration;
     private readonly TextBox[] shortcuts = new TextBox[5];
     private readonly TextBlock inferredStage = OverlayWindow.Text("等待比分推断关卡", 11, "#A1A1AA");
     private readonly Slider opacity = new() { Minimum = 0, Maximum = 95, TickFrequency = 5, IsSnapToTickEnabled = true };
@@ -192,10 +201,10 @@ public sealed class SettingsWindow : Window
         editor.Children.Add(pageHost);
 
         preview = new OverlaySettingsPreview((Style)FindResource("Option"));
-        var integration = BuildComponentIntegration();
+        integration = BuildComponentIntegration();
         DockPanel.SetDock(integration, Dock.Bottom);
         rightPane.Children.Add(integration);
-        rightPane.Children.Add(preview);
+        rightPane.Children.Add(new Grid { Children = { preview, kzMapPanel } });
         Grid.SetRow(rightPane, 1);
         Grid.SetColumn(rightPane, 2);
         root.Children.Add(rightPane);
@@ -314,6 +323,7 @@ public sealed class SettingsWindow : Window
         fonts.MaxDropDownHeight = 300; fonts.IsTextSearchEnabled = true;
         panel.Children.Add(fonts);
         BuildTextStyleEditor(panel);
+        BuildKzColorEditor(panel);
 
         panel = AddPage("显示信息", "\uE890");
         Label(panel, "开启要在悬浮窗中显示的项目");
@@ -350,6 +360,8 @@ public sealed class SettingsWindow : Window
         }, false));
         panel.Children.Add(showButtons);
         Note(panel, "“当前无法获取该地图信息”仍会显示。拖动模式下可右键悬浮窗打开操作菜单。");
+
+        AddKzPage();
 
         panel = AddPage("快捷键", "\uE765");
         Label(panel, "全局快捷键");
@@ -389,16 +401,43 @@ public sealed class SettingsWindow : Window
         scale.ValueChanged += (_, _) => UpdatePreview();
         rowSpacing.ValueChanged += (_, _) => UpdatePreview();
         columnSpacing.ValueChanged += (_, _) => UpdatePreview();
-        foreach (var check in displayFields.Values)
+        foreach (var (field, check) in displayFields)
         {
-            check.Checked += (_, _) => UpdatePreview();
-            check.Unchecked += (_, _) => UpdatePreview();
+            check.Checked += (_, _) => Changed();
+            check.Unchecked += (_, _) => Changed();
+
+            void Changed()
+            {
+                UpdatePreview();
+                if (!loadingSettings && field is OverlayField.KzDifficulty or OverlayField.KzMode) preview.ShowKz();
+            }
         }
         KeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
         var initial = currentSettings();
         LoadEditor(initial);
         SelectPage(initial.MapSource == MapSource.Broadcast && BroadcastReader.Read(initial.BroadcastPath).FileUnavailable ? 0 : 1);
     }
+
+    private void AddKzPage()
+    {
+        kzPageIndex = pages.Count;
+        var panel = AddPage("KZ 地图探测", "\uE81D");
+        panel.Children.Add(CreateSwitchRow("启用 KZ 地图探测", kzEnabled, new Thickness(0, 0, 0, 16)));
+        var label = Label(panel, "显示 Tier 的模式");
+        AutomationProperties.SetLabeledBy(kzMode, label);
+        kzMode.Items.Add(new ComboBoxItem { Content = "自动（读取控制台日志）", Tag = KzMode.Auto });
+        kzMode.Items.Add(new ComboBoxItem { Content = "CKZ", Tag = KzMode.Ckz });
+        kzMode.Items.Add(new ComboBoxItem { Content = "VNL", Tag = KzMode.Vnl });
+        panel.Children.Add(kzMode);
+        kzEnabled.Checked += (_, _) => kzMode.IsEnabled = true;
+        kzEnabled.Unchecked += (_, _) => kzMode.IsEnabled = false;
+        Note(panel, "地图名来自 CS2 GSI，难度来自 CS2KZ 官方 API。首次使用请在「数据与文件」配置 GSI，然后重启游戏。");
+        Note(panel, "识别当前模式需要在 Steam 的 CS2 启动选项添加 -condebug 并重启。若右侧显示「待识别」，在游戏聊天中输入 !mode 可读取当前模式。");
+        Note(panel, "NUB 允许使用传送，PRO 为无传送。更改设置后点击「保存设置」。");
+    }
+
+    internal void UpdateKzMap(string map, string status, KzMode? currentMode = null, KzMode tierMode = KzMode.Auto, KzMap? data = null) =>
+        kzMapPanel.Update(map, status, currentMode, tierMode, data);
 
     private void AddConfigurationPage()
     {
@@ -655,6 +694,9 @@ public sealed class SettingsWindow : Window
         autoUpdateDays.Text = (next.AutoUpdateDays > 0 ? next.AutoUpdateDays : Settings.DefaultAutoUpdateDays).ToString(CultureInfo.CurrentCulture);
         autoUpdateDays.IsEnabled = autoUpdate.IsChecked == true;
         obsEnabled.IsChecked = next.ObsEnabled;
+        kzEnabled.IsChecked = next.KzEnabled;
+        kzMode.SelectedValue = next.KzMode;
+        kzMode.IsEnabled = next.KzEnabled;
         var hotkeys = next.Hotkeys;
         for (int i = 0; i < shortcuts.Length; i++) shortcuts[i].Text = hotkeys[i];
         opacity.Value = next.BackgroundOpacity * 100;
@@ -669,6 +711,10 @@ public sealed class SettingsWindow : Window
         styleDrafts.Clear();
         foreach (var (field, style) in next.FieldTextStyles) styleDrafts[field] = TextStyleDraft.FromStyle(style);
         styleDrafts[OverlayField.None] = TextStyleDraft.FromStyle(next.GlobalTextStyle);
+        kzColorDrafts.Clear();
+        foreach (var (token, color) in next.KzTextColors) kzColorDrafts[token] = color;
+        kzColorTargets.SelectedItem ??= "T1";
+        kzColorValue.Text = kzColorDrafts.GetValueOrDefault((string)kzColorTargets.SelectedItem, "");
         SelectTextTarget(textTarget);
         loadingSettings = false;
         OnMapSourceChanged();
@@ -730,9 +776,9 @@ public sealed class SettingsWindow : Window
         title.Margin = new Thickness(0, 16, 0, 8);
         (string Version, string Summary)[] releases =
         [
+            ("1.3.0.1", "新增 KZ 地图探测、路线 Tier 和「非全球图」提示。悬浮窗和 OBS 随地图自动切换 ZE 奖励或 KZ 难度与模式，支持独立设置各个 Tier 和模式的文字颜色。"),
             ("1.2.5.3", "「关于」新增最近三个版本的更新摘要，并突出显示当前版本。"),
-            ("1.2.5.2", "新增自动更新和发布说明。改进地图与关卡来源、文字样式和拖动排序，修复悬浮窗拖动时的位置偏移。"),
-            ("1.2.5.1", "修复 SVIP 云点加成。20% 加成按基础云点与伤害兑换云点之和计算，伤害兑换云点仍单独显示。")
+            ("1.2.5.2", "新增自动更新和发布说明。改进地图与关卡来源、文字样式和拖动排序，修复悬浮窗拖动时的位置偏移。")
         ];
         foreach (var (version, summary) in releases)
         {
@@ -865,7 +911,8 @@ public sealed class SettingsWindow : Window
         textTargets.MinHeight = 34;
         textTargets.Items.Add(new ComboBoxItem { Tag = OverlayField.None, Content = GlobalTextLabel });
         foreach (var (field, name) in OverlayTypography.Labels)
-            textTargets.Items.Add(new ComboBoxItem { Tag = field, Content = name });
+            if (field is not (OverlayField.KzDifficulty or OverlayField.KzMode))
+                textTargets.Items.Add(new ComboBoxItem { Tag = field, Content = name });
         AutomationProperties.SetName(textTargets, "应用到");
         textTargets.SelectionChanged += (_, _) =>
         {
@@ -915,27 +962,7 @@ public sealed class SettingsWindow : Window
         var pickColor = Button("选色…", PickTextColor, false);
         pickColor.Padding = resetTextColor.Padding;
         AddTextStyleRow(panel, "文字颜色", colorInput, pickColor, resetTextColor);
-        var palette = new WrapPanel { Margin = new Thickness(0, 0, 0, 12) };
-        (string Color, string Name, bool DarkMark)[] colors =
-        {
-            ("#FFFFFF", "白色", true), ("#39A7E5", "蓝色", true), ("#32BDB7", "青色", true),
-            ("#A4ED86", "绿色", true), ("#F7D34C", "黄色", true), ("#FF9D3F", "橙色", true),
-            ("#F45858", "红色", true), ("#F272A0", "粉色", true), ("#A366D6", "紫色", false)
-        };
-        foreach (var (color, name, darkMark) in colors)
-        {
-            var swatch = new RadioButton
-            {
-                Style = (Style)FindResource("Swatch"), GroupName = "TextColor", Background = OverlayWindow.Brush(color),
-                Foreground = darkMark ? Brushes.Black : Brushes.White, ToolTip = name + " " + color,
-                Margin = new Thickness(0, 0, 5, 6)
-            };
-            AutomationProperties.SetName(swatch, name + " " + color);
-            swatch.Click += (_, _) => textColor.Text = color;
-            swatches.Add(color, swatch);
-            palette.Children.Add(swatch);
-        }
-        panel.Children.Add(palette);
+        panel.Children.Add(BuildColorPalette(textColor, swatches, "TextColor"));
 
         textWeight.MinHeight = 34;
         AutomationProperties.SetName(textWeight, "字重");
@@ -959,6 +986,76 @@ public sealed class SettingsWindow : Window
             StoreTextDraft();
         };
         textWeight.SelectionChanged += (_, _) => StoreTextDraft();
+    }
+
+    private void BuildKzColorEditor(StackPanel panel)
+    {
+        Section(panel, "KZ 文字颜色");
+        kzColorTargets.ItemsSource = KzTypography.ColorTargets;
+        AutomationProperties.SetName(kzColorTargets, "要设置颜色的 KZ 难度或模式");
+        AddTextStyleRow(panel, "应用到", kzColorTargets);
+
+        StyleTextBox(kzColorValue);
+        kzColorValue.ToolTip = "#RRGGBB";
+        AutomationProperties.SetName(kzColorValue, "KZ 自定义十六进制颜色");
+        var input = new Grid { Margin = new Thickness(0, 0, 8, 0) };
+        var placeholder = OverlayWindow.Text("#RRGGBB", 11, "#A1A1AA");
+        placeholder.HorizontalAlignment = HorizontalAlignment.Center;
+        placeholder.IsHitTestVisible = false;
+        input.Children.Add(kzColorValue);
+        input.Children.Add(placeholder);
+        var pick = Button("选色…", () =>
+        {
+            if (kzColorTargets.SelectedItem is string token)
+                PickTextColor(kzColorValue, KzTypography.DefaultColor(token));
+        }, false);
+        var reset = Button("使用默认样式", () => kzColorValue.Text = "", false);
+        reset.Margin = new Thickness(0);
+        AddTextStyleRow(panel, "文字颜色", input, pick, reset);
+        panel.Children.Add(BuildColorPalette(kzColorValue, kzSwatches, "KzTextColor"));
+
+        kzColorTargets.SelectionChanged += (_, _) =>
+        {
+            if (kzColorTargets.SelectedItem is not string token) return;
+            kzColorValue.Text = kzColorDrafts.GetValueOrDefault(token, "");
+            if (!loadingSettings) preview.ShowKz(token);
+        };
+        kzColorValue.TextChanged += (_, _) =>
+        {
+            if (kzColorTargets.SelectedItem is not string token) return;
+            var color = kzColorValue.Text.Trim().ToUpperInvariant();
+            kzColorDrafts[token] = color;
+            placeholder.Visibility = color.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var (hex, swatch) in kzSwatches) swatch.IsChecked = hex == color;
+            if (loadingSettings) return;
+            UpdatePreview();
+            preview.ShowKz(token);
+        };
+    }
+
+    private WrapPanel BuildColorPalette(TextBox input, Dictionary<string, RadioButton> buttons, string group)
+    {
+        var palette = new WrapPanel { Margin = new Thickness(0, 0, 0, 12) };
+        (string Color, string Name, bool DarkMark)[] colors =
+        {
+            ("#FFFFFF", "白色", true), ("#39A7E5", "蓝色", true), ("#32BDB7", "青色", true),
+            ("#A4ED86", "绿色", true), ("#F7D34C", "黄色", true), ("#FF9D3F", "橙色", true),
+            ("#F45858", "红色", true), ("#F272A0", "粉色", true), ("#A366D6", "紫色", false)
+        };
+        foreach (var (color, name, darkMark) in colors)
+        {
+            var swatch = new RadioButton
+            {
+                Style = (Style)FindResource("Swatch"), GroupName = group, Background = OverlayWindow.Brush(color),
+                Foreground = darkMark ? Brushes.Black : Brushes.White, ToolTip = name + " " + color,
+                Margin = new Thickness(0, 0, 5, 6)
+            };
+            AutomationProperties.SetName(swatch, name + " " + color);
+            swatch.Click += (_, _) => input.Text = color;
+            buttons.Add(color, swatch);
+            palette.Children.Add(swatch);
+        }
+        return palette;
     }
 
     private static void AddTextStyleRow(Panel panel, string label, params UIElement[] controls)
@@ -1039,11 +1136,13 @@ public sealed class SettingsWindow : Window
         preview.Update(draft, textTarget);
     }
 
-    private void PickTextColor()
+    private void PickTextColor() => PickTextColor(textColor, EffectiveTextStyle().Color!);
+
+    private void PickTextColor(TextBox input, string fallback)
     {
-        string original = textColor.Text;
-        var initial = (Color)ColorConverter.ConvertFromString(EffectiveTextStyle().Color!);
-        var picker = new TextColorPicker(initial, hex => textColor.Text = hex, (Style)FindResource("SettingsButton"))
+        string original = input.Text;
+        var initial = (Color)ColorConverter.ConvertFromString(OverlayTextStyle.IsValidColor(original.Trim()) ? original.Trim() : fallback);
+        var picker = new TextColorPicker(initial, hex => input.Text = hex, (Style)FindResource("SettingsButton"))
         {
             Owner = this, FontFamily = FontFamily
         };
@@ -1051,7 +1150,7 @@ public sealed class SettingsWindow : Window
         var origin = editor.TranslatePoint(new Point(), this);
         picker.Left = Left + origin.X + Math.Max(0, (editor.ActualWidth - picker.Width) / 2);
         picker.Top = Top + origin.Y + Math.Max(0, (editor.ActualHeight - picker.Height) / 2);
-        textColor.Text = picker.ShowDialog() == true ? picker.SelectedHex : original;
+        input.Text = picker.ShowDialog() == true ? picker.SelectedHex : original;
     }
 
     private bool TrySaveTextStyles(Settings next)
@@ -1166,7 +1265,10 @@ public sealed class SettingsWindow : Window
         button.IsChecked = true;
         pageHost.Content = page;
         bool about = button.Parent == sidebarFooter;
+        bool kz = index == kzPageIndex;
         rightPane.Visibility = about ? Visibility.Collapsed : Visibility.Visible;
+        preview.Visibility = integration.Visibility = kz ? Visibility.Collapsed : Visibility.Visible;
+        kzMapPanel.Visibility = kz ? Visibility.Visible : Visibility.Collapsed;
         Grid.SetColumnSpan(editor, about ? 2 : 1);
     }
 
@@ -1218,7 +1320,7 @@ public sealed class SettingsWindow : Window
         mapSourceHint.Text = usesGsi
             ? "地图由 GSI 读取。关卡优先使用匹配的叠层文本，其次使用单关奖励配置或 CT 比分。"
             : "地图和关卡均从直播助手叠层文本读取。";
-        gsiConfigLabel.Text = usesGsi ? "CS2 GSI 配置" : "CS2 GSI 配置（用于击杀估算）";
+        gsiConfigLabel.Text = usesGsi ? "CS2 GSI 配置" : "CS2 GSI 配置（用于击杀估算与 KZ 地图探测）";
         broadcastPathLabel.Text = usesGsi ? "叠层文本路径（可选，用于读取关卡）" : "叠层文本路径";
         gsiStageControls.Visibility = usesGsi ? Visibility.Visible : Visibility.Collapsed;
         if (!usesGsi && string.IsNullOrWhiteSpace(path.Text)) path.Text = BroadcastFiles.DefaultPath;
@@ -1396,12 +1498,23 @@ public sealed class SettingsWindow : Window
             return;
         }
         var next = ReadAppearance();
+        foreach (var (token, color) in kzColorDrafts)
+        {
+            if (color.Length == 0 || OverlayTextStyle.IsValidColor(color)) continue;
+            SelectPage(1);
+            kzColorTargets.SelectedItem = token;
+            kzColorValue.BringIntoView();
+            SetError($"{token} 的颜色请输入 #RRGGBB 或使用选色按钮。");
+            return;
+        }
         if (!TrySaveTextStyles(next)) return;
         next.BroadcastPath = selectedPath;
         next.PollIntervalMilliseconds = milliseconds;
         next.RewardRefreshMinutes = minutes;
         next.AutoUpdateDays = updateDays;
         next.ObsEnabled = obsEnabled.IsChecked == true;
+        next.KzEnabled = kzEnabled.IsChecked == true;
+        next.KzMode = kzMode.SelectedValue is KzMode mode ? mode : KzMode.Auto;
         var message = apply(next, true);
         if (message is not null) SetError(message);
         else SetSuccess("设置已保存");
@@ -1426,6 +1539,8 @@ public sealed class SettingsWindow : Window
         draft.DisplayOrder = displayRows.Children.Cast<Grid>().Select(row => (OverlayField)row.Tag).ToArray();
         draft.HiddenFields = displayFields.Where(entry => entry.Value.IsChecked != true)
             .Aggregate(OverlayField.None, (fields, entry) => fields | entry.Key);
+        draft.KzTextColors = kzColorDrafts.Where(entry => OverlayTextStyle.IsValidColor(entry.Value))
+            .ToDictionary(entry => entry.Key, entry => entry.Value);
         return draft;
     }
 

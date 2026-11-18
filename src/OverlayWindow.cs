@@ -19,6 +19,7 @@ public sealed class OverlayWindow : Window
     private readonly bool demo;
     private readonly bool interactiveSetup;
     private readonly RewardRepository rewards;
+    private readonly KzMaps kzMaps = new();
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private readonly DispatcherTimer gsiStatusTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private HotkeyManager? hotkeys;
@@ -31,6 +32,9 @@ public sealed class OverlayWindow : Window
     internal Window UpdateDialogOwner => settingsWindow is { IsVisible: true, WindowState: not WindowState.Minimized } window ? window : this;
     private GsiListener? gsi;
     private string gsiError = "";
+    private KzModeLog? kzModeLog;
+    private long nextKzLogSearch;
+    private string detectedKzMap = "";
     private ObsBrowserSource? obs;
     private RewardCard? obsCard;
     private string obsError = "";
@@ -83,12 +87,18 @@ public sealed class OverlayWindow : Window
             ApplyMapSource();
             ApplyObsSettings();
             Tick();
+            UpdateKzMap();
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded, PlaceWindow);
             timer.Start();
+            gsiStatusTimer.Start();
             if (!demo && interactiveSetup && inputUnavailable) OpenSettings();
         };
         timer.Tick += (_, _) => Tick();
-        gsiStatusTimer.Tick += (_, _) => UpdateGsiStatus();
+        gsiStatusTimer.Tick += (_, _) =>
+        {
+            UpdateGsiStatus();
+            UpdateKzMap();
+        };
         Closing += (_, e) => { if (!quitting) { e.Cancel = true; Hide(); } };
         Closed += (_, _) =>
         {
@@ -160,6 +170,7 @@ public sealed class OverlayWindow : Window
             Render(RewardCard.Sample);
             return;
         }
+        if (IsCurrentKzMap()) return;
         var broadcast = ReadMap();
         var data = rewards.GetLastResult(broadcast.Map);
         bool mapChanged = identity != broadcast.Identity;
@@ -197,7 +208,7 @@ public sealed class OverlayWindow : Window
         {
             var data = await rewards.GetAsync(broadcast.Map);
             // Re-read after every await: never put the previous map's result on a new map.
-            if (!quitting)
+            if (!quitting && !IsCurrentKzMap())
             {
                 var latest = ReadMap();
                 if (version == generation && latest.Identity == broadcast.Identity)
@@ -228,6 +239,72 @@ public sealed class OverlayWindow : Window
     }
 
     private void UpdateGsiStatus() => settingsWindow?.UpdateGsiStatus(gsi?.State, gsi?.CurrentRoundDamage, gsiError, demo);
+
+    private bool IsCurrentKzMap() => settings.KzEnabled && gsi?.CurrentMap is { Length: > 0 } map &&
+        (KzMaps.IsKzMap(map) || map == detectedKzMap);
+
+    private void UpdateKzMap()
+    {
+        string map = gsi?.CurrentMap ?? "";
+        if (!settings.KzEnabled || map.Length == 0)
+        {
+            kzModeLog = null;
+            nextKzLogSearch = 0;
+            string status = !settings.KzEnabled ? "KZ 地图探测已关闭" :
+                gsiError.Length > 0 ? gsiError : gsi?.State == GsiListener.ConnectionState.TimedOut ? "CS2 GSI 推送已超时" : "等待 CS2 GSI 推送地图";
+            settingsWindow?.UpdateKzMap("", status);
+            ClearKzDisplay();
+            return;
+        }
+
+        if (kzModeLog is null && Environment.TickCount64 >= nextKzLogSearch)
+        {
+            nextKzLogSearch = Environment.TickCount64 + 10000;
+            if (SteamCs2.FindConfigDirectory() is { } cfg)
+                kzModeLog = new KzModeLog(Path.Combine(cfg, "..", "console.log"));
+        }
+        var currentMode = kzModeLog?.Read(map) ?? KzMode.Auto;
+        if (map.StartsWith("ze_", StringComparison.Ordinal) || (currentMode == KzMode.Auto && !KzMaps.IsKzMap(map)))
+        {
+            settingsWindow?.UpdateKzMap(map, "当前为其他类型地图");
+            ClearKzDisplay();
+            return;
+        }
+
+        detectedKzMap = map;
+        var result = kzMaps.Lookup(map);
+        var tierMode = settings.KzMode == KzMode.Auto ? currentMode : settings.KzMode;
+        var translated = settings.BroadcastPath.Length > 0 ? BroadcastReader.Read(settings.BroadcastPath) : null;
+        string title = translated?.Map == map ? translated.Title : "";
+        if (lastDisplay?.Kz is null)
+        {
+            identity = "";
+            generation++;
+        }
+        inputUnavailable = false;
+        Render(new DisplayInfo(true, map, title, null, null, "", "") { Kz = KzOverlayInfo.Resolve(result, currentMode, tierMode) });
+
+        if (settingsWindow is null) return;
+        string message = result switch
+        {
+            null => "正在查询 CS2KZ 官方 API…",
+            { Failed: true } => "CS2KZ API 暂时无法查询，30 秒后自动重试",
+            { Map: null } => "难度 · 非全球图",
+            { Map.Courses.Count: 0 } => "CS2KZ 官方暂无路线难度",
+            _ when tierMode == KzMode.Auto => "Tier · 同时显示 CKZ 和 VNL",
+            _ when settings.KzMode != KzMode.Auto => $"Tier · 手动显示 {tierMode.ToString().ToUpperInvariant()}",
+            _ => ""
+        };
+        if (result?.Map is { State: "invalid" })
+            message = message.Length == 0 ? "官方地图版本已失效" : message + " · 官方地图版本已失效";
+        settingsWindow.UpdateKzMap(map, message, currentMode, tierMode, result?.Map);
+    }
+
+    private void ClearKzDisplay()
+    {
+        detectedKzMap = "";
+        if (lastDisplay?.Kz is not null) Tick();
+    }
 
     private void OnCombatStatsChanged(bool killsChanged, bool damageChanged) =>
         Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
@@ -402,12 +479,11 @@ public sealed class OverlayWindow : Window
         { Updates = Updates };
         settingsWindow.Closed += (_, _) =>
         {
-            gsiStatusTimer.Stop();
             settingsWindow = null;
         };
         UpdateGsiStatus();
+        UpdateKzMap();
         UpdateObsStatus();
-        gsiStatusTimer.Start();
         settingsWindow.Show();
         settingsWindow.Activate();
         if (!demo && settings.MapSource == MapSource.Gsi)
@@ -441,6 +517,7 @@ public sealed class OverlayWindow : Window
         settings = next;
         identity = ""; generation++;
         ApplyMapSource();
+        UpdateKzMap();
         ApplyUpdateIntervals();
         ApplyObsSettings();
         ApplyAppearance(); UpdateLayout(); PlaceWindow();

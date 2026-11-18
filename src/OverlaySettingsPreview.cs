@@ -1,3 +1,4 @@
+using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -9,6 +10,7 @@ internal sealed class OverlaySettingsPreview : DockPanel
 {
     private readonly RewardCard template = new(() => { }, () => { }, () => { });
     private readonly RadioButton rewards;
+    private readonly RadioButton kz;
     private readonly RadioButton unavailable;
     private readonly RadioButton move;
     private readonly Border canvas;
@@ -19,10 +21,12 @@ internal sealed class OverlaySettingsPreview : DockPanel
     private static readonly Brush SolidBackground = Brush("#202023");
     private Settings? draft;
     private OverlayField field;
+    private string kzSample = "T1";
 
     internal OverlaySettingsPreview(Style optionStyle)
     {
         rewards = Option("通关奖励", "PreviewTemplate");
+        kz = Option("KZ 地图", "PreviewTemplate");
         unavailable = Option("不可用提示", "PreviewTemplate");
         move = Option("拖动模式", "PreviewTemplate");
         var heading = Text("悬浮窗预览", 15, "#F0F0F2", true);
@@ -30,6 +34,7 @@ internal sealed class OverlaySettingsPreview : DockPanel
         AddAbove(heading);
         var templates = new WrapPanel { Margin = new Thickness(0, 0, 0, 6) };
         templates.Children.Add(rewards);
+        templates.Children.Add(kz);
         templates.Children.Add(unavailable);
         templates.Children.Add(move);
         AddAbove(templates);
@@ -66,6 +71,7 @@ internal sealed class OverlaySettingsPreview : DockPanel
         Children.Add(canvas);
 
         rewards.Checked += (_, _) => Render();
+        kz.Checked += (_, _) => Render();
         unavailable.Checked += (_, _) => Render();
         move.Checked += (_, _) => Render();
         grid.Checked += (_, _) => canvas.Background = GridBackground;
@@ -104,6 +110,13 @@ internal sealed class OverlaySettingsPreview : DockPanel
         Render();
     }
 
+    internal void ShowKz(string sample = "T1")
+    {
+        kzSample = sample;
+        if (kz.IsChecked == true) Render();
+        else kz.IsChecked = true;
+    }
+
     private void Render()
     {
         if (draft is null) return;
@@ -114,6 +127,15 @@ internal sealed class OverlaySettingsPreview : DockPanel
         var info = showError
             ? DisplayInfo.Resolve(BroadcastReader.Invalid(showFileButton ? BroadcastFiles.DisplayName + "尚未生成" : "尚未读取到当前关卡"), null)
             : RewardCard.Sample;
+        if (kz.IsChecked == true)
+        {
+            int tier = kzSample.StartsWith('T') && int.TryParse(kzSample.AsSpan(1), out int selected) ? selected : 1;
+            var mode = kzSample == "CKZ" ? KzMode.Ckz : KzMode.Vnl;
+            info = new DisplayInfo(true, "kz_example", "示例地图", null, null, "", "")
+            {
+                Kz = mode == KzMode.Ckz ? new(mode, null, tier) : new(mode, tier, null)
+            };
+        }
         template.Render(info, showFileButton, false);
         string? menuText = draft.Locked ? null : RewardCard.MoveMenuLabel(field);
         menuPreview.Visibility = menuText is null ? Visibility.Collapsed : Visibility.Visible;

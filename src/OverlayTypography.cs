@@ -52,6 +52,7 @@ internal static class OverlayTypography
         OverlayField.HotkeyHint => new(10, "#98A6B7", 400),
         OverlayField.ErrorDetail => new(11, "#A5AFBC", 400),
         OverlayField.Unavailable => new(17, "#F2F5F8", 600),
+        OverlayField.KzDifficulty or OverlayField.KzMode => new(24, "#E6E6EB", 600),
         OverlayField.SettingsButton or OverlayField.LockButton or OverlayField.SelectFileButton => new(10, "#FFFFFF", 400),
         _ => new(18, "#D5EDFF", 400)
     };
@@ -68,4 +69,17 @@ internal static class OverlayTypography
         text.Foreground = OverlayWindow.Brush(style.Color!);
         text.FontWeight = FontWeight.FromOpenTypeWeight(style.Weight!.Value);
     }
+}
+
+internal static class KzTypography
+{
+    internal static readonly string[] ColorTargets =
+        Enumerable.Range(0, KzTiers.MaxTier + 1).Select(tier => $"T{tier}").Concat(["VNL", "CKZ"]).ToArray();
+
+    internal static string ModeName(KzMode mode) => mode switch { KzMode.Vnl => "VNL", KzMode.Ckz => "CKZ", _ => "待识别" };
+
+    internal static string DefaultColor(string token) => token switch
+    {
+        "VNL" => "#80C8FF", "CKZ" => "#D7ABFF", _ => "#A4ED86"
+    };
 }

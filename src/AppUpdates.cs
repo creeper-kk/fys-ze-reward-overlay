@@ -62,6 +62,8 @@ internal sealed class AppUpdates : IDisposable
         catch (Exception ex) when (IsUpdateError(ex)) { }
         if (release is null && packages?.GetInstalledRelease(current) is { } cached)
             release = new(cached.Tag, ReleaseCheck.Repository + "/releases/tag/" + Uri.EscapeDataString(cached.Tag), 0, cached.Notes ?? "", null);
+        if (string.IsNullOrWhiteSpace(release?.Notes))
+            release = ReleaseCheck.GetBundledRelease(current) ?? release;
         if (release is null || disposed) return;
         new ReleaseDialog(release, installed: true, canUpdate: false, owner?.UpdateDialogOwner).ShowDialog();
         Store(state with { LastShownVersion = current });

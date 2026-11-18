@@ -7,8 +7,8 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>FysZeRewardOverlay</AssemblyName>
-    <Version>1.2.5.3</Version>
-    <InformationalVersion>1.2.5.3</InformationalVersion>
+    <Version>1.3.0.1</Version>
+    <InformationalVersion>1.3.0.1</InformationalVersion>
     <Authors>creeper_kk</Authors>
     <RepositoryUrl>https://github.com/creeper-kk/fys-ze-reward-overlay</RepositoryUrl>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -19,6 +19,7 @@
   <ItemGroup>
     <Resource Include="$(ApplicationIcon)" />
     <EmbeddedResource Include="Assets\rewards.json" LogicalName="rewards.json" />
+    <EmbeddedResource Include="Assets\ReleaseNotes.md" LogicalName="release-notes-1.3.0.1.md" />
     <AssemblyMetadata Include="RepositoryUrl" Value="$(RepositoryUrl)" />
     <InternalsVisibleTo Include="Overlay.Tests" />
   </ItemGroup>
